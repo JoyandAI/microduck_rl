@@ -830,6 +830,12 @@ def main():
                         help="Use the unified 13D command obs layout (twist+head_pose+body_pose). "
                              "Required for policies trained with the new pose-command-tracking setup. "
                              "Old policies (51D obs, head_offset added to ctrl) need this flag OFF.")
+    parser.add_argument("--push-max", type=float, default=1.0,
+                        help="Random push magnitude [m/s] for the P key. Default 1.0 matches "
+                             "the FINAL velstand curriculum cap; a velocity-only policy was "
+                             "trained against +-0.3, so use --push-max 0.3 to test walking "
+                             "disturbance rejection (velstand-style recovery needs the "
+                             "VelStand policy).",)
     parser.add_argument("--current-limit", type=float, default=1.75,
                         help="XL330 firmware current limit [A]. Actuator torque is clipped to "
                              "+/- current_limit * kt (kt from the bam package), matching the "
@@ -1045,7 +1051,7 @@ def main():
     # the trunk's world-frame linear velocity directly (qvel[0..3]).
     _freejoint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "trunk_base_freejoint")
     _trunk_qvel_adr = int(model.jnt_dofadr[_freejoint_id])
-    PUSH_MAX = 1.0   # matches the final velstand push_magnitude curriculum cap
+    PUSH_MAX = args.push_max
 
     def random_push():
         """Set the trunk's world-frame xy velocity to a random vector of

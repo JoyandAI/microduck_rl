@@ -117,16 +117,21 @@ FULL_COLLISION = CollisionCfg(
 #   - vin_drop_gain_range: load-dependent voltage sag V_drop = gain * sum(|tau|)
 #   - vin_min: hard floor on the effective voltage after sag
 # kp_fw kept at 200 (microduck's preserved firmware stiffness; microban uses 125).
+#
+# NOTE (feat/feetech-hls2909): the robot now runs Feetech HL-2909-C001 servos
+# (12V 9kg.cm TTL). Values below are PLACEHOLDERS until calibrated — see
+# docs/actuator_physics_swap_plan.md (G1-G4 gates) and
+# docs/feetech_hls_memtable.md. Do NOT start a long training run with these.
 _BAM_ACTUATOR_KWARGS = dict(
-    motor_name="xl330",
-    model="m6",
+    motor_name="hls2909",  # was "xl330"
+    model="m1",            # was "m6"; 先低阶, 标定后升级
     target_names_expr=(r"^(?!passive_).*",),
-    kp_fw=200.0,  # microduck's preserved firmware stiffness (microban uses 125)
+    kp_fw=200.0,  # 占位(示波器/出厂21标定后定); 200*0.166/8 ≈ 4.15 duty/rad
     # vin_range=(6.9, 7.9),
-    vin_range=(6.5, 8.2),
-    vin_drop_gain_range=(0.0, 0.2),
-    vin_min=6.0,
-    # max_current=1.75,
+    vin_range=(10.5, 12.6),      # 占位: 12V 系统 ±5% (规格 9-14V, 待整机供电实测)
+    vin_drop_gain_range=(0.0, 0.15),  # 占位: 待 12V 电源/线阻实测
+    vin_min=10.0,                # 占位: 12V 系统欠压下限
+    # max_current=0.6,  # HLS 固件限流 0.6A@12V (BamActuatorCfg 无此字段; 在 HLS2909Actuator 内)
     delay_min_lag=3,
     delay_max_lag=6,
 )
