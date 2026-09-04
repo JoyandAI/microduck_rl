@@ -79,9 +79,9 @@ def body_inertial(xml_text: str, body: str) -> tuple[float, list[float]]:
     return float(im.group(2)), inertia
 
 
-def apply_mass(xml: Path, delta_m: float, dry_run: bool) -> tuple[int, float, float]:
+def apply_mass(xml: Path, delta_m: float, dry_run: bool) -> tuple[int, int, float, float]:
     """Add delta_m [kg] to each servo-case body; proportional inertia. Returns
-    (n_bodies_updated, mass_before_total, mass_after_total)."""
+    (n_servos, n_bodies_updated, mass_before_total, mass_after_total)."""
     text = xml.read_text(encoding="utf-8")
     parents = servo_parents(xml)
 
@@ -128,7 +128,7 @@ def apply_mass(xml: Path, delta_m: float, dry_run: bool) -> tuple[int, float, fl
         if not bak.exists():
             shutil.copy2(xml, bak)
         xml.write_text(text, encoding="utf-8")
-    return n, total_before, total_after
+    return len(parents), n, total_before, total_after
 
 
 def main() -> None:
@@ -145,9 +145,9 @@ def main() -> None:
         if not xml.exists():
             print(f"SKIP {fname} (missing)")
             continue
-        n, before, after = apply_mass(xml, args.delta_m, args.dry_run)
+        n, n_bodies, before, after = apply_mass(xml, args.delta_m, args.dry_run)
         tag = "DRY-RUN " if args.dry_run else "UPDATED "
-        print(f"{tag}{fname:<44} {n:>2} bodies  {before*1000:7.1f}g -> {after*1000:7.1f}g"
+        print(f"{tag}{fname:<44} {n_bodies:>2} bodies  {before*1000:7.1f}g -> {after*1000:7.1f}g"
               f"  (+{(after-before)*1000:6.1f}g = {n} servos x {args.delta_m*1000:g}g)")
 
 

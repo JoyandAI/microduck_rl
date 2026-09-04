@@ -1,14 +1,15 @@
 {
     "kt": 1.454,
     "R": 20.0,
-    "armature": 0.0001,
+    "armature": 0.001,
     "q_offset": 0.0,
-    "friction_base": 0.05,
-    "friction_viscous": 0.06,
+    "friction_base": 0.08,
+    "friction_viscous": 0.012,
     "error_gain": 0.166,
     "kd": 0.0,
     "max_velocity": 8.06,
     "max_acceleration": 38.6,
     "model": "m1",
-    "actuator": "hls2909"
+    "actuator": "hls2909",
+    "kp": 600
 }
