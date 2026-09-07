@@ -916,7 +916,7 @@ MicroduckRlCfg = RslRlOnPolicyRunnerCfg(
         obs_normalization=True,
         distribution_cfg={
             "class_name": "GaussianDistribution",
-            "init_std": 1.0,
+            "init_std": 0.5,  # was 1.0 (xl330); HLS 双限幅下大动作→饱和乱蹬→学不动 (2026-09-04 诊断)
             "std_type": "scalar",
         },
     ),

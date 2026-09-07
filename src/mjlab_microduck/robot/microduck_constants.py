@@ -126,7 +126,7 @@ _BAM_ACTUATOR_KWARGS = dict(
     motor_name="hls2909",  # was "xl330"
     model="m1",            # was "m6"; 先低阶, 标定后升级
     target_names_expr=(r"^(?!passive_).*",),
-    kp_fw=200.0,  # 占位(示波器/出厂21标定后定); 200*0.166/8 ≈ 4.15 duty/rad
+    kp_fw=32.0,   # 出厂真值 (reg21 EPROM P / reg50 SRAM Kp = 32; 误用 200 会过硬 6 倍)
     # vin_range=(6.9, 7.9),
     vin_range=(10.5, 12.6),      # 占位: 12V 系统 ±5% (规格 9-14V, 待整机供电实测)
     vin_drop_gain_range=(0.0, 0.15),  # 占位: 待 12V 电源/线阻实测

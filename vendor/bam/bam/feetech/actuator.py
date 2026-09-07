@@ -120,7 +120,7 @@ class HLS2909Actuator(VoltageControlledActuator):
             # 占位: 示波器标定 (duty/error 斜率 × 1/8 缩放组合后的等效值)
             error_gain=0.166,
             max_pwm=0.97,
-            max_current=0.6,  # 官网: 堵转电流 0.6A@12V
+            max_current=1.95,  # 出厂真值: reg28/44 = 300×6.5mA (官网 0.6A 是等效测试电流)
         )
         # 占位 (出厂参数 84/85/86 或阶跃实测后填入):
         #   84 最大速度限制 → max_velocity [rad/s] (空载 77rpm = 8.06 rad/s 为上限)
@@ -152,6 +152,8 @@ class HLS2909Actuator(VoltageControlledActuator):
             0.1 * self.default_max_acceleration,
             10 * self.default_max_acceleration,
         )
+        # 固件电流上限 (reg28 保护电流, 出厂 = 44 目标电流): BAM 限流约束用
+        self.model.max_current = Parameter(1.95, 0.1, 5.0)
         # 二阶爬坡状态 (lazy-init in compute_control: mjlab 路径无 load_log)
         self._q_target_smooth = None
         self._v_target_smooth = None
@@ -197,9 +199,9 @@ class HLS2909Actuator(VoltageControlledActuator):
         )
 
         # -- 3. 固件电流限幅 (仅能约束 duty, 与基类 VoltageControlledActuator 同式)
-        if self.max_current is not None:
+        if self.model.max_current.value > 0:
             back_emf = self.model.kt.value * dq
-            duty_span = self.model.R.value * self.max_current / self.vin
+            duty_span = self.model.R.value * self.model.max_current.value / self.vin
             duty_center = back_emf / self.vin
             duty_cycle = self.backend.clamp(
                 duty_cycle, duty_center - duty_span, duty_center + duty_span

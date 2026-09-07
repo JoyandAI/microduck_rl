@@ -249,40 +249,59 @@ def main() -> int:
     ser.reset_input_buffer()
     print(f"[i] 串口 {args.port} @ {args.baud} baud 已打开。舵机接 12V 电源了吗?")
 
-    # 找到舵机 ID
-    pid = args.id
-    if pid == 0:
+    # 找到舵机 ID(列表)
+    if args.id == 0:
         found = []
         for cand in range(254):
             if ping(ser, cand):
                 found.append(cand)
                 print(f"[i] 发现舵机 ID = {cand}")
-                if len(found) > 8:
+                if len(found) >= 20:
                     break
         if not found:
             print("[!] 没有 PING 到任何舵机! 检查: 供电 9-14V / 信号线接对 (调试板SIG↔舵机SIG) / 波特率是否 1M (试 --baud 115200 / 500000 ...)")
             ser.close()
             return 1
-        pid = found[0]
-        if len(found) > 1:
-            print(f"[i] 总线多台舵机, 只读第一台 ID={pid} (要读特定台用 --id)")
     else:
-        if not ping(ser, pid):
-            print(f"[!] ID={pid} 无响应。用 --id 0 自动扫描, 或用 --baud 调整波特率。")
+        found = [args.id]
+        if not ping(ser, args.id):
+            print(f"[!] ID={args.id} 无响应。用 --id 0 自动扫描, 或用 --baud 调整波特率。")
             ser.close()
             return 1
-        print(f"[i] 舵机 ID={pid} 应答正常。")
+        print(f"[i] 舵机 ID={args.id} 应答正常。")
 
-    # 先确认供电正常
-    echk = read_regs(ser, pid, 62, 1)
-    if echk:
-        print(f"[i] 供电: {echk[0] / 10.0:.1f} V (应在 9-14V 之间)")
-    else:
-        print("[!] 警告: 读电压失败, 数据可能不可靠。")
+    # 读所有发现舵机 (每台出厂参数 77-86 是厂家逐台标定的, 可能略有差异)
+    all_payload = {"meta": {
+        "port": args.port, "baud": args.baud,
+        "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "protocol": "FT-SCS", "model": "HL-2909-C001",
+    }, "servos": []}
+    for pid in found:
+        echk = read_regs(ser, pid, 62, 1)
+        if echk:
+            print(f"[i] ID={pid} 供电: {echk[0] / 10.0:.1f} V (应在 9-14V 之间)")
+        else:
+            print(f"[!] ID={pid} 警告: 读电压失败, 数据可能不可靠。")
+        regs = decode_all(ser, pid, READ_PLAN)
+        summary = calibration_summary(regs)
+        all_payload["servos"].append({"id": pid, "registers": regs,
+                                      "calibration_summary": summary})
+        print(f"===== 舵机 ID={pid} 标定摘要 =====")
+        for k, v in summary.items():
+            print(f"  {k:<24} = {v}")
+        out_path = Path(args.out).with_name(f"hls_registers_id{pid}.json")
+        json.dump({"meta": all_payload["meta"], "servo_id": pid,
+                   "registers": regs, "calibration_summary": summary},
+                  open(out_path, "w", encoding="utf-8"),
+                  ensure_ascii=False, indent=2)
+        print(f"[i] 已保存: {out_path.resolve()}")
 
-    print("[i] 开始读取寄存器表...")
-    regs = decode_all(ser, pid, READ_PLAN)
-    summary = calibration_summary(regs)
+    out_path = Path(args.out)
+    out_path.write_text(json.dumps(all_payload, ensure_ascii=False, indent=2),
+                        encoding="utf-8")
+    print(f"[i] 汇总已保存: {out_path.resolve()}  ← 把这个文件发回即可")
+    ser.close()
+    return 0
 
     # 人话输出
     print("\n" + "=" * 72)
@@ -295,24 +314,6 @@ def main() -> int:
         else:
             u = info.get("unit", "")
             print(f"  {addr:>3}  {info['name']:<18}  {v!s:>12} {u:<12} {info.get('note','')}")
-    print("\n[★ 标定摘要 → BAM 参数]")
-    for k, v in summary.items():
-        print(f"  {k:<24} = {v}")
-
-    out_path = Path(args.out)
-    payload = {
-        "meta": {
-            "port": args.port, "baud": args.baud, "servo_id": pid,
-            "time": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "protocol": "FT-SCS", "model": "HL-2909-C001",
-        },
-        "registers": regs,
-        "calibration_summary": summary,
-    }
-    out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"\n[i] 已保存: {out_path.resolve()}  ← 把这个文件发回即可")
-    ser.close()
-    return 0
 
 
 if __name__ == "__main__":

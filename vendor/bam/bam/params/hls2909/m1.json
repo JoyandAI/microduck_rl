@@ -6,10 +6,9 @@
     "friction_base": 0.08,
     "friction_viscous": 0.012,
     "error_gain": 0.166,
-    "kd": 0.0,
-    "max_velocity": 8.06,
+    "kd": 32,
+    "max_velocity": 19.1637,
     "max_acceleration": 38.6,
     "model": "m1",
-    "actuator": "hls2909",
-    "kp": 600
+    "actuator": "hls2909"
 }
