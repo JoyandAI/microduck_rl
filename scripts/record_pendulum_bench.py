@@ -202,8 +202,15 @@ def main() -> int:
     # 配置: 位置伺服
     write_regs(ser, pid, 46, [0, 0])
     write_regs(ser, pid, 40, [0])
-    write_regs(ser, pid, 55, [0])
-    write_regs(ser, pid, 33, [0])
+    # 运行模式: 自动保持设备当前模式(HD-1910 出厂默认 4=纯位置PD/Sim2Real; HLS 默认 0)。
+    # 不强制写 0 —— 强制切到模式 0 会改变控制律, 识别结果与部署不一致。
+    mode_now = r16(33)
+    mode_now_u = mode_now & 0xFF if mode_now is not None else 0
+    if mode_now_u in (0, 4):
+        print(f"[i] 运行模式 reg33={mode_now_u} (0=位置伺服/4=纯位置PD-Sim2Real), 保持不变")
+    else:
+        print(f"[!] 运行模式 reg33={mode_now_u} 超出已知语义(0/4), 写 0 继续")
+        write_regs(ser, pid, 33, [0])
     # reg41=0 在官方 HLS 内存表中表示最大加速度，与部署配置保持一致。
     write_regs(ser, pid, 41, [0])
     write_regs(ser, pid, 46, [0xFF, 0x7F])
@@ -214,10 +221,15 @@ def main() -> int:
     zeros = [z for z in zeros if z is not None]
     q_zero = float(np.median(zeros))
     print(f"[i] 台架舵机 ID={pid}, 零位 q_zero={q_zero:.1f} LSB(摆杆垂直向下)")
+    # HD-1910(mode4) 位置误差不做 ±2048 回绕: q_zero 不能落在编码器 0/4095 附近,
+    # 否则目标会撞角度限位(实测 4094→338 走 -3755 LSB 长路径; 目标被钳位 [0,4095])。
+    if q_zero < 300 or q_zero > 3796:
+        print(f"[!] q_zero={q_zero:.0f} 接近编码器 0/4095 回绕区, mode4 下目标会走长路径/撞限位!"
+              "请重新安装摆臂(让垂线落在 300~3796 之间)后重试。")
+        return 1
 
     # 符号检测
     write_regs(ser, pid, 40, [1])
-    write_regs(ser, pid, 55, [1])
     time.sleep(0.1)
     goal = int(round(q_zero + 0.2 / LSB_RAD)) % 4096
     write_regs(ser, pid, 42, [goal & 0xFF, (goal >> 8) & 0xFF])
@@ -276,12 +288,13 @@ def main() -> int:
                     angle, enable = traj(t)
                     glb = int(round(q_zero + sign * angle / LSB_RAD)) % 4096
                     if enable:
+                        # B 式写序(HD-1910 mode4 已验证 16/16 稳定): 每拍只写 目标42 + 扭矩40;
+                        # 不写 reg46(速度) —— HLS 原序在 HD mode4 下实测不动。
                         write_regs(ser, pid, 42, [glb & 0xFF, (glb >> 8) & 0xFF])
                         write_regs(ser, pid, 40, [1])
-                        write_regs(ser, pid, 55, [1])
+                        # reg55 写锁: 不再逐拍写(与已验证协议一致)。
                     else:
                         write_regs(ser, pid, 40, [0])
-                        write_regs(ser, pid, 55, [0])
                     t_now = time.time() - t_start
                     pos = r16(56)
                     if pos is None:
@@ -304,8 +317,8 @@ def main() -> int:
                                     "duty": duty, "vin": vin, "current_A": cur, "temp": tmp})
                     safety.check(current_A=cur, temp_C=tmp)
                     time.sleep(max(0.0, dt_loop - (time.time() - t_start - t_now)))
-                write_regs(ser, pid, 46, [0, 0])
                 write_regs(ser, pid, 42, [int(q_zero) & 0xFF, (int(q_zero) >> 8) & 0xFF])
+                write_regs(ser, pid, 40, [0])
                 time.sleep(SETTLE_S)
                 if len(entries) < 50:
                     print("FAIL(样本过少), 跳过")
