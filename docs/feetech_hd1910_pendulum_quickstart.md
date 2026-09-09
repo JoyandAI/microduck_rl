@@ -20,10 +20,10 @@
 | 1 | 写序改 **B 式**：配置时 `46=max` 一次，之后**每拍只写** `42=目标 → 40=1`（正文实验命令不变，只改脚本内部） | B 式连做 16/16 全动最稳；HLS 原序 `46=0→42→40=1→46=32767` 在 mode 4 下**不动**（2026-09-09 实测） |
 | 2 | 配置段**不写 reg33=0**；脚本现在自动保持当前模式（读到 4 或 0 就不动） | 写 0 会切到模式 0（角度伺服+限力），与部署控制律不一致，识别结果不能用 |
 | 3 | 目标写入做**零位守卫**：q_zero 落在 300–3796 之外直接拒绝运行（配合"误差不回绕"） | mode 4 **有效目标被钳位 [0,4095] 且误差不回绕**：q_zero 靠近 0/4095 时小目标会冲向限位（实测 4094→338 走 -3755 LSB 长路径；写 6349 停在 4094） |
-| 4 | 采集命令 `--id 14`（或先用 `setup_bench_servo.py --find-id 14 --set-id 1` 改成 1） | 当前舵机 ID=14，并非 1 |
+| 4 | 采集命令 `--id 1`（已通过 `setup_bench_servo.py --set-id 1` 改好） | 台架舵机 ID 已设为 1 |
 | 5 | ⚠️ **电流安全检查失效**：HD 的 reg69 反馈在运动中读 0（reg73 偏置 2040）→ 脚本的 `|I|>1.0A×0.7s` 自动中止在 HD 上不起作用 | 安全链只剩：温度(reg63) + 30s 看门狗 + 3A 物理保险丝 + 急停 —— 人为关注度要提高 |
 
-上电后先用 `tools/check_servo_bench.py --port /dev/ttyACM0 --id 14 --yes` 复检到 **PASS**（含空转），
+上电后先用 `tools/check_servo_bench.py --port /dev/ttyACM0 --id 1 --yes` 复检到 **PASS**（含空转），
 再进第 2 节正式采集。
 
 > 台架：HD-1910 与 HL-2909 同尺寸（34×20×23 mm）、同 25T 舵盘、双轴，现有夹具可直接用；
@@ -33,27 +33,21 @@
 
 ## 1. 称量参数表（只做一次，和 HLS 完全一样，填下表）
 
-| 参数 | 含义 | 怎么量 | 示例 | 你的实测值 |
-|---|---|---|---|---|
-| `m_arm` | 摆杆质量（只称杆） | 电子秤 0.1 g | **10/15/20cm 杆已称：0.0109 / 0.0124 / 0.0145 kg** | 用哪根填哪根 |
-| `m_hub` | 舵机臂 + 杆夹 + 近轴螺丝 | 电子秤 0.1 g | 0.020 kg | `____` |
-| `r_hub` | 轴心 → m_hub 质心 | 卡尺 ±2 mm | 0.010 m | `____` |
-| `L` | 轴心 → 端部总质量**质心** | 卡尺 ±1 mm | 0.150 m | `____` |
-| `m_tip` 50 g | 托盘 + 砝码 + 夹紧件**整套** | 电子秤 0.1 g | 0.050 kg | `____` |
-| `m_tip` 100 g | 同上一整套 | 电子秤 0.1 g | 0.100 kg | `____` |
-| `m_tip` 150 g | 同上一整套 | 电子秤 0.1 g | 0.150 kg | `____` |
+| 参数 | 含义 | 本次实测值（15cm 杆，已验证） |
+|---|---|---|
+| `m_arm` | 纯杆质量（不含固定螺栓） | **0.0100 kg**（杆+螺栓整套 12.4g − 螺栓 2.4g；10/20cm 杆 = 0.0085 / 0.0121） |
+| `m_hub` | 近轴转件：2 舵盘 + 8 螺丝（无杆夹/无夹杆螺丝，螺栓已计入 tip） | **0.0021 kg** |
+| `r_hub` | 轴心 → m_hub 质心 | **0.005 m**（估，hub 仅 2.1g 影响可忽略） |
+| `L` | 轴心 → 砝码片中心（卡尺实测；现取值 0.150） | **0.150 m** |
+| `m_tip` 50 g | 砝码片 + 固定螺栓(2.4g) **整套** | **0.0524 kg** |
+| `m_tip` 100 g | 同上（当前档） | **0.1024 kg** |
+| `m_tip` 150 g | 同上 | **0.1524 kg** |
 
-⚠️ 红线：`m_tip × g × L ≤ 0.35 N·m`。HD-1910 @6V 额定 3 kg·cm(0.294 N·m)，
-150 g + 0.15 m 的完整静态重力矩 ≈ 0.236 N·m → **工作在额定以内，不会发热**，比 HLS 更从容。
+⚠️ 红线：`m_tip × g × L ≤ 0.35 N·m`。150g 档完整静态重力矩 ≈ 0.24 N·m → 安全，
+且 HD-1910 额定(3 kg·cm=0.294 N·m)以上才算重载——摆锤全程额定以内。
 
-**现场填写速查**（抄命令前 2 分钟搞定，下划线处填值）：
-
-- ✅ 已确定：`--arm-mass 0.0124`（**15 cm 杆**已称；10/20 cm 杆改用 0.0109 / 0.0145）
-- ❓ 现场称/量（电子秤 0.1 g + 卡尺 ±1 mm）：
-  `--tip-mass` 50g 档整套 `____` kg（100g 档 `____`、150g 档 `____`，**整套含托盘+夹头+螺丝**）
-  `--hub-mass` `____` kg；`--hub-radius` `____` m；`--arm-length` = 实测 **L** `____` m
-  （15 cm 杆名义 0.150，装好端部堆叠后实测，可能略大于 0.150）
-
+> 机械说明（已与现场核对）：杆末端用**螺栓（2.4g）直接固定砝码片**，无托盘、无夹杆块；
+> 螺栓在杆末端 → 计入 m_tip（与砝码整套称）；2.1g = 2 个舵盘 + 8 颗舵盘螺丝 = m_hub；
 > 其余命令参数均为脚本自动处理（临时限流/零位/符号检测/安全链），无需填写。
 
 ### ⚠️HD 模型初值（已写入 `bam/params/hd1910/m1.json`，与真机一致）
@@ -75,34 +69,37 @@ max_velocity = 9.63 rad/s @6V（规格 92RPM）  max_acceleration = 500.0（限�
 ### 2.1 台架就位（同 HLS）
 
 - [x] 装摆臂（先不装砝码）；C 夹 ×2 锁死；轴水平；手动摆 ±90° 无碰撞；摆动平面清空
-- [x] ⚠️HD **电源 = 6.0 V 稳压**（HD-1910 是 6V 级，4–8.4V；**不是 12V！** 12V 会触发过压保护）
-- [x] ⚠️HD 舵机总线 ID=14；确认只有这一只在线（`--list-ports` + 扫描）
+- [x] ⚠️HD **电源 = 5.0 V 稳压**（4–8.4V 内即可；6V 更好，5V 速度/力矩按比例降、仍 3 倍余量）
+- [x] ⚠️HD 供电电压会在每条 log 记录（reg62 中位数），拟合自动使用实测 `vin`，无需改模型
+- [x] ⚠️HD 舵机总线 ID=**1**（已改）；确认只有这一只在线（`--list-ports` + 扫描）
 
-### 2.2 第 1 档：装 50 g 整套 → 先试跑 1 条
+### 2.2 第 1 条：先试跑（100g 档，已核对参数）
 
 ```bash
-/usr/bin/python3 scripts/record_pendulum_bench.py --port /dev/ttyACM0 --id 14 \
-  --tip-mass 0.05 --arm-mass 0.0124 --arm-length 0.15 --hub-mass 0.020 --hub-radius 0.010 \
+/usr/bin/python3 scripts/record_pendulum_bench.py --port /dev/ttyACM0 --id 1 \
+  --tip-mass 0.1024 --arm-mass 0.0100 --arm-length 0.15 \
+  --hub-mass 0.0021 --hub-radius 0.005 \
   --trajectory up_and_down --reps 1 --out hd1910_calibration/pilot
 ```
 
-✅ 标准：输入 START 后，杆从下垂 0° 匀抬到 +90°（正方向正确）、无碰撞、`OK` 且样本 > 50。
-→ 通过后跑全量：
+✅ 标准：输入 START 后，杆从下垂 0° 匀抬到 +90°（正方向正确）、无碰撞、`OK` 且样本 > 1000。
+→ 通过后按 50 → 100 → 150 g 顺序跑全量（每档一条命令，**只改 `--tip-mass`**）：
 
+**50 g 档：**
 ```bash
-/usr/bin/python3 scripts/record_pendulum_bench.py --port /dev/ttyACM0 --id 14 \
-  --tip-mass 0.05 --arm-mass 0.0124 --arm-length 0.15 --hub-mass 0.020 --hub-radius 0.010 \
+/usr/bin/python3 scripts/record_pendulum_bench.py --port /dev/ttyACM0 --id 1 \
+  --tip-mass 0.0524 --arm-mass 0.0100 --arm-length 0.15 \
+  --hub-mass 0.0021 --hub-radius 0.005 \
   --trajectory sin_time_square --trajectory sin_sin --trajectory lift_and_drop --trajectory up_and_down \
   --reps 3 --limit-a 0.975 --torque-budget 0.35 --out hd1910_calibration/bench
 ```
 
-脚本会要求输入 `START`（大写，确认手已离开摆动平面）。共 12 条（4 轨迹 × 3 次），约 12–15 分钟。
+**100 g 档：** 同 50 g 档命令，仅 `--tip-mass 0.1024`
 
-### 2.3 第 2 档：换 100 g → 上一条命令只改 `--tip-mass 0.10`
+**150 g 档：** 同 50 g 档命令，仅 `--tip-mass 0.1524`
 
-### 2.4 第 3 档：换 150 g → 再改 `--tip-mass 0.15`
-
-换砝码要点（同 HLS）：重新整套称重 → M6 螺母锁紧 + 螺纹胶 → 手动摆过 ±90° → 输入 START。
+脚本要求输入 `START`（大写，确认手已离开摆动平面）。每档 12 条（4 轨迹 × 3 次），约 12–15 分钟。
+换砝码要点：重称"砝码片+螺栓"整套（2.4g 螺栓不变，砝码片 50/100/150g）→ 手动摆过 ±90° → 输入 START。
 
 ### 2.5 数据检查
 
@@ -142,9 +139,9 @@ cat hd1910_calibration/fit/mae_report.md
 
 ```bash
 /usr/bin/python3 scripts/record_pendulum_bench.py \
-  --port /dev/ttyACM0 --id 14 \
-  --tip-mass 0.05 --tip-mass 0.10 --tip-mass 0.15 \
-  --arm-mass 0.0124 --arm-length 0.15 --hub-mass 0.020 --hub-radius 0.010 \
+  --port /dev/ttyACM0 --id 1 \
+  --tip-mass 0.0524 --tip-mass 0.1024 --tip-mass 0.1524 \
+  --arm-mass 0.0100 --arm-length 0.15 --hub-mass 0.0021 --hub-radius 0.005 \
   --trajectory sin_time_square --trajectory sin_sin --trajectory lift_and_drop --trajectory up_and_down \
   --reps 3 --limit-a 0.975 --torque-budget 0.35 --out hd1910_calibration/bench
 ```
@@ -152,12 +149,12 @@ cat hd1910_calibration/fit/mae_report.md
 | 参数 | 含义 | 取值/单位 | 怎么填 | 填错了会怎样 |
 |---|---|---|---|---|
 | `--port` | USB-TTL 串口设备 | `/dev/ttyACM0` 等 | `ls /dev/ttyACM*` 看到哪个填哪个 | 打不开直接报错 |
-| `--id` | 舵机总线 ID | 0–253 | ⚠️HD 当前=**14**（HLS 默认是 1）；可先用 setup 脚本改成 1 | 写错 ID → 采集全程无响应/扫不到 |
-| `--tip-mass`（可重复） | 端部总质量，**每档一个**，脚本每档暂停等你换砝码 | 千克（kg），0.1 g 秤**整套**称 | 50/100/150 g 档分别填 `0.05 / 0.10 / 0.15`（用实测值） | 填太小 → 重力矩档位错、负载相关摩擦（m3–m6）辨识不出来；填超红线 → 脚本拒绝运行 |
-| `--arm-mass` | 摆杆质量（只称杆，不含端部托） | kg | 实测，如 `0.018` | 影响惯量 M 与重力矩 B_max 的换算，误差会进拟合 |
-| `--arm-length` | **L**：轴心 → 端部总质量质心 | 米（m），卡尺 ±1 mm | 实测，如 `0.150` | 摆长是全部动力学换算的基准，务必实测不是杆长 |
-| `--hub-mass` | 舵机臂 + 杆夹 + 近轴螺丝总质量 | kg | 实测，如 `0.020` | 偏小 → 惯量/重力矩少算（量级小，影响有限） |
-| `--hub-radius` | 轴心 → m_hub 质心 | 米（m） | 实测，如 `0.010` | 同上 |
+| `--id` | 舵机总线 ID | 0–253 | ⚠️HD 当前=**1**（已用 setup 脚本改好） | 写错 ID → 采集全程无响应/扫不到 |
+| `--tip-mass`（可重复） | 端部总质量，**每档一个**，脚本每档暂停等你换砝码 | 千克（kg），0.1 g 秤**整套**称 | 本次实测：`0.0524 / 0.1024 / 0.1524`（砝码片+固定螺栓 2.4g 整套） | 填太小 → 重力矩档位错、负载相关摩擦（m3–m6）辨识不出来；填超红线 → 脚本拒绝运行 |
+| `--arm-mass` | 摆杆质量（只称杆，不含端部托） | kg | 本次实测：`0.0100`（15cm 纯杆） | 影响惯量 M 与重力矩 B_max 的换算，误差会进拟合 |
+| `--arm-length` | **L**：轴心 → 端部总质量质心 | 米（m），卡尺 ±1 mm | 本次取值：`0.150`（15cm 杆装好后实测更准） | 摆长是全部动力学换算的基准，务必实测不是杆长 |
+| `--hub-mass` | 舵机臂 + 杆夹 + 近轴螺丝总质量 | kg | 本次实测：`0.0021`（2 舵盘+8 螺丝；无杆夹） | 偏小 → 惯量/重力矩少算（量级小，影响有限） |
+| `--hub-radius` | 轴心 → m_hub 质心 | 米（m） | 本次取值：`0.005`（hub 仅 2.1g 影响可忽略） | 同上 |
 | `--trajectory`（可重复） | 激励轨迹，每条 6 s | 四个：`sin_time_square`（速度扫频 ±57°）、`sin_sin`（多频复合 ±90°）、`lift_and_drop`（抬升→断扭自由落体）、`up_and_down`（低速 0→+90°→+72°） | **四个都写** | 少一个 → 该激励缺失，对应摩擦项（背驱/静摩擦）不可辨识；写错名 → 报错退出 |
 | `--reps` | 每"质量×轨迹"的重复次数 | 整数 | `3`（**最后一次重复留作独立验证**，拟合脚本自动切分） | 只填 1 → 无法切独立验证集，拟合脚本报错 |
 | `--out` | 输出目录（原始 log + manifest） | 路径 | HLS 用 `hls2909_calibration/bench`；⚠️HD 用 `hd1910_calibration/bench` 分开存 | 与 HLS 混用会污染 36 条的目录 |
@@ -179,7 +176,7 @@ cat hd1910_calibration/fit/mae_report.md
 | `--set-id` | 把舵机 ID 改成该值 | 改成 `1` 后，采集命令可用 `--id 1`；EPROM 写入，断电不丢 |
 
 ```bash
-/usr/bin/python3 scripts/setup_bench_servo.py --port /dev/ttyACM0 --find-id 14 --set-id 1
+/usr/bin/python3 scripts/setup_bench_servo.py --port /dev/ttyACM0 --find-id 14 --set-id 1   # 已完成：ID 现为 1
 ```
 
 ### 3.3 `process_bench_logs.py`（重采样）
@@ -204,7 +201,7 @@ cat hd1910_calibration/fit/mae_report.md
 
 | 参数 | 含义 | 说明 |
 |---|---|---|
-| `--port` / `--id` | 串口 / 舵机 ID | 当前 `--id 14` |
+| `--port` / `--id` | 串口 / 舵机 ID | 当前 `--id 1`（已改好） |
 | `--no-move` | 只读体检（不动） | 快速检查用 |
 | `--move` | 空转步数（LSB） | 默认 150 ≈ 13.2° |
 | `--yes` | 跳过交互确认 | 无人值守用 |
