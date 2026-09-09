@@ -46,6 +46,16 @@
 ⚠️ 红线：`m_tip × g × L ≤ 0.35 N·m`。HD-1910 @6V 额定 3 kg·cm(0.294 N·m)，
 150 g + 0.15 m 的完整静态重力矩 ≈ 0.236 N·m → **工作在额定以内，不会发热**，比 HLS 更从容。
 
+**现场填写速查**（抄命令前 2 分钟搞定，下划线处填值）：
+
+- ✅ 已确定：`--arm-mass 0.0124`（**15 cm 杆**已称；10/20 cm 杆改用 0.0109 / 0.0145）
+- ❓ 现场称/量（电子秤 0.1 g + 卡尺 ±1 mm）：
+  `--tip-mass` 50g 档整套 `____` kg（100g 档 `____`、150g 档 `____`，**整套含托盘+夹头+螺丝**）
+  `--hub-mass` `____` kg；`--hub-radius` `____` m；`--arm-length` = 实测 **L** `____` m
+  （15 cm 杆名义 0.150，装好端部堆叠后实测，可能略大于 0.150）
+
+> 其余命令参数均为脚本自动处理（临时限流/零位/符号检测/安全链），无需填写。
+
 ### ⚠️HD 模型初值（已写入 `bam/params/hd1910/m1.json`，与真机一致）
 
 ```text
@@ -72,7 +82,7 @@ max_velocity = 9.63 rad/s @6V（规格 92RPM）  max_acceleration = 500.0（限�
 
 ```bash
 /usr/bin/python3 scripts/record_pendulum_bench.py --port /dev/ttyACM0 --id 14 \
-  --tip-mass 0.05 --arm-mass 0.018 --arm-length 0.15 --hub-mass 0.020 --hub-radius 0.010 \
+  --tip-mass 0.05 --arm-mass 0.0124 --arm-length 0.15 --hub-mass 0.020 --hub-radius 0.010 \
   --trajectory up_and_down --reps 1 --out hd1910_calibration/pilot
 ```
 
@@ -81,7 +91,7 @@ max_velocity = 9.63 rad/s @6V（规格 92RPM）  max_acceleration = 500.0（限�
 
 ```bash
 /usr/bin/python3 scripts/record_pendulum_bench.py --port /dev/ttyACM0 --id 14 \
-  --tip-mass 0.05 --arm-mass 0.018 --arm-length 0.15 --hub-mass 0.020 --hub-radius 0.010 \
+  --tip-mass 0.05 --arm-mass 0.0124 --arm-length 0.15 --hub-mass 0.020 --hub-radius 0.010 \
   --trajectory sin_time_square --trajectory sin_sin --trajectory lift_and_drop --trajectory up_and_down \
   --reps 3 --limit-a 0.975 --torque-budget 0.35 --out hd1910_calibration/bench
 ```
@@ -134,7 +144,7 @@ cat hd1910_calibration/fit/mae_report.md
 /usr/bin/python3 scripts/record_pendulum_bench.py \
   --port /dev/ttyACM0 --id 14 \
   --tip-mass 0.05 --tip-mass 0.10 --tip-mass 0.15 \
-  --arm-mass 0.018 --arm-length 0.15 --hub-mass 0.020 --hub-radius 0.010 \
+  --arm-mass 0.0124 --arm-length 0.15 --hub-mass 0.020 --hub-radius 0.010 \
   --trajectory sin_time_square --trajectory sin_sin --trajectory lift_and_drop --trajectory up_and_down \
   --reps 3 --limit-a 0.975 --torque-budget 0.35 --out hd1910_calibration/bench
 ```
