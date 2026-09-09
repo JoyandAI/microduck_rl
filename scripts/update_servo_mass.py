@@ -133,8 +133,8 @@ def apply_mass(xml: Path, delta_m: float, dry_run: bool) -> tuple[int, int, floa
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--delta-m", type=float, default=0.0045,
-                    help="mass increase per servo [kg] (XL330 18g -> HL-2909 22.5g)")
+    ap.add_argument("--delta-m", type=float, default=0.0098,
+                    help="mass increase per servo [kg] (XL330 18g -> HL-2909 27.8g, 2026-09-07 修正)")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--models", nargs="*", default=MODELS,
                     help="XML filenames under ROBOT_DIR")

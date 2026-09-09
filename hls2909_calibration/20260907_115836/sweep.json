@@ -1,0 +1,240 @@
+{
+  "summary": {
+    "kp_fw": 32,
+    "kd_fw": 32,
+    "kt_Nm_per_A": NaN,
+    "R_ohm": Infinity,
+    "fit_r2": -27.847999999999992,
+    "friction_coulomb_Nm": NaN,
+    "friction_viscous_Nm_s_per_rad": NaN,
+    "n_steady_points": 16
+  },
+  "points": [
+    {
+      "cmd_lsb": 10,
+      "vel_lsb": 0.0,
+      "vel_rad_s": 0.0,
+      "duty": 0.0,
+      "vin_V": 12.600000000000001,
+      "cur_A": -0.00364,
+      "temp_C": 39.0
+    },
+    {
+      "cmd_lsb": 20,
+      "vel_lsb": 0.0,
+      "vel_rad_s": 0.0,
+      "duty": 0.0,
+      "vin_V": 12.600000000000001,
+      "cur_A": -0.0033799999999999998,
+      "temp_C": 39.0
+    },
+    {
+      "cmd_lsb": 40,
+      "vel_lsb": 0.0,
+      "vel_rad_s": 0.0,
+      "duty": 0.0,
+      "vin_V": 12.600000000000001,
+      "cur_A": -0.0026,
+      "temp_C": 39.0
+    },
+    {
+      "cmd_lsb": 80,
+      "vel_lsb": 0.0,
+      "vel_rad_s": 0.0,
+      "duty": 0.0,
+      "vin_V": 12.600000000000001,
+      "cur_A": -0.0041600000000000005,
+      "temp_C": 39.0
+    },
+    {
+      "cmd_lsb": 120,
+      "vel_lsb": 0.0,
+      "vel_rad_s": 0.0,
+      "duty": 0.0,
+      "vin_V": 12.596000000000002,
+      "cur_A": -0.0039000000000000003,
+      "temp_C": 39.0
+    },
+    {
+      "cmd_lsb": 160,
+      "vel_lsb": 0.0,
+      "vel_rad_s": 0.0,
+      "duty": 0.0,
+      "vin_V": 12.600000000000001,
+      "cur_A": -0.00364,
+      "temp_C": 39.0
+    },
+    {
+      "cmd_lsb": 200,
+      "vel_lsb": 0.0,
+      "vel_rad_s": 0.0,
+      "duty": 0.0,
+      "vin_V": 12.600000000000001,
+      "cur_A": -0.00572,
+      "temp_C": 39.0
+    },
+    {
+      "cmd_lsb": 250,
+      "vel_lsb": 0.0,
+      "vel_rad_s": 0.0,
+      "duty": 0.0,
+      "vin_V": 12.600000000000001,
+      "cur_A": -0.00468,
+      "temp_C": 39.0
+    },
+    {
+      "cmd_lsb": -10,
+      "vel_lsb": 0.0,
+      "vel_rad_s": 0.0,
+      "duty": 0.0,
+      "vin_V": 12.600000000000001,
+      "cur_A": -0.00442,
+      "temp_C": 39.0
+    },
+    {
+      "cmd_lsb": -20,
+      "vel_lsb": 0.0,
+      "vel_rad_s": 0.0,
+      "duty": 0.0,
+      "vin_V": 12.600000000000001,
+      "cur_A": -0.0026,
+      "temp_C": 39.0
+    },
+    {
+      "cmd_lsb": -40,
+      "vel_lsb": 0.0,
+      "vel_rad_s": 0.0,
+      "duty": 0.0,
+      "vin_V": 12.600000000000001,
+      "cur_A": -0.0041600000000000005,
+      "temp_C": 39.0
+    },
+    {
+      "cmd_lsb": -80,
+      "vel_lsb": 0.0,
+      "vel_rad_s": 0.0,
+      "duty": 0.0,
+      "vin_V": 12.600000000000001,
+      "cur_A": -0.0039000000000000003,
+      "temp_C": 39.0
+    },
+    {
+      "cmd_lsb": -120,
+      "vel_lsb": 0.0,
+      "vel_rad_s": 0.0,
+      "duty": 0.0,
+      "vin_V": 12.600000000000001,
+      "cur_A": -0.0039000000000000003,
+      "temp_C": 39.0
+    },
+    {
+      "cmd_lsb": -160,
+      "vel_lsb": 0.0,
+      "vel_rad_s": 0.0,
+      "duty": 0.0,
+      "vin_V": 12.600000000000001,
+      "cur_A": -0.0036400000000000004,
+      "temp_C": 39.0
+    },
+    {
+      "cmd_lsb": -200,
+      "vel_lsb": 0.0,
+      "vel_rad_s": 0.0,
+      "duty": 0.0,
+      "vin_V": 12.600000000000001,
+      "cur_A": -0.00338,
+      "temp_C": 39.0
+    },
+    {
+      "cmd_lsb": -250,
+      "vel_lsb": 0.0,
+      "vel_rad_s": 0.0,
+      "duty": 0.0,
+      "vin_V": 12.600000000000001,
+      "cur_A": -0.00364,
+      "temp_C": 39.0
+    }
+  ],
+  "friction": [
+    {
+      "abs_vel_rad_s": 0.0,
+      "tau_Nm": NaN,
+      "forward": true
+    },
+    {
+      "abs_vel_rad_s": 0.0,
+      "tau_Nm": NaN,
+      "forward": true
+    },
+    {
+      "abs_vel_rad_s": 0.0,
+      "tau_Nm": NaN,
+      "forward": true
+    },
+    {
+      "abs_vel_rad_s": 0.0,
+      "tau_Nm": NaN,
+      "forward": true
+    },
+    {
+      "abs_vel_rad_s": 0.0,
+      "tau_Nm": NaN,
+      "forward": true
+    },
+    {
+      "abs_vel_rad_s": 0.0,
+      "tau_Nm": NaN,
+      "forward": true
+    },
+    {
+      "abs_vel_rad_s": 0.0,
+      "tau_Nm": NaN,
+      "forward": true
+    },
+    {
+      "abs_vel_rad_s": 0.0,
+      "tau_Nm": NaN,
+      "forward": true
+    },
+    {
+      "abs_vel_rad_s": 0.0,
+      "tau_Nm": NaN,
+      "forward": true
+    },
+    {
+      "abs_vel_rad_s": 0.0,
+      "tau_Nm": NaN,
+      "forward": true
+    },
+    {
+      "abs_vel_rad_s": 0.0,
+      "tau_Nm": NaN,
+      "forward": true
+    },
+    {
+      "abs_vel_rad_s": 0.0,
+      "tau_Nm": NaN,
+      "forward": true
+    },
+    {
+      "abs_vel_rad_s": 0.0,
+      "tau_Nm": NaN,
+      "forward": true
+    },
+    {
+      "abs_vel_rad_s": 0.0,
+      "tau_Nm": NaN,
+      "forward": true
+    },
+    {
+      "abs_vel_rad_s": 0.0,
+      "tau_Nm": NaN,
+      "forward": true
+    },
+    {
+      "abs_vel_rad_s": 0.0,
+      "tau_Nm": NaN,
+      "forward": true
+    }
+  ]
+}

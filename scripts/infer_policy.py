@@ -836,6 +836,11 @@ def main():
                              "trained against +-0.3, so use --push-max 0.3 to test walking "
                              "disturbance rejection (velstand-style recovery needs the "
                              "VelStand policy).",)
+    parser.add_argument("--motor", default="xl330", choices=["xl330", "hls2909"],
+                        help="Motor model for the force-limit kt (default xl330; "
+                             "hls2909 policies: use 1.95A current limit)")
+    parser.add_argument("--model", default=None,
+                        help="BAM model tier for the kt lookup (default: hls2909->m1, else m6)")
     parser.add_argument("--current-limit", type=float, default=1.75,
                         help="XL330 firmware current limit [A]. Actuator torque is clipped to "
                              "+/- current_limit * kt (kt from the bam package), matching the "
@@ -895,7 +900,8 @@ def main():
     # trained against (see BamActuator.max_current). kt comes from the bam package.
     if args.current_limit and args.current_limit > 0:
         from bam.model import load_model
-        kt = load_model(motor_name="xl330", model="m6").kt.value
+        _model = args.model or ("m1" if args.motor == "hls2909" else "m6")
+        kt = load_model(motor_name=args.motor, model=_model).kt.value
         torque_limit = kt * args.current_limit
         model.actuator_forcerange[:, 0] = -torque_limit
         model.actuator_forcerange[:, 1] = torque_limit

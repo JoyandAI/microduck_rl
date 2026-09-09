@@ -1,6 +1,6 @@
 # AGENTS.md
 
-RL training environments for Microduck — a ~800 g, ~25 cm tall bipedal
+RL training environments for Microduck — a ~874 g, ~25 cm tall bipedal
 robot with 14 Dynamixel XL330 servos — built on [mjlab](https://github.com/mujocolab/mjlab)
 (MuJoCo Warp) with PPO (rsl_rl). Policies are trained here at 50 Hz, exported to
 ONNX, and deployed by the runtime in the `pollen-robotics/microduck` repo on

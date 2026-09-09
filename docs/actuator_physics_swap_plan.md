@@ -138,7 +138,7 @@ G1 不依赖示波器/摆锤，可最先做；**G2/G3 是质量保证关键，�
 |---|---|
 | `scripts/testbench_sim2real.py`（120/132/314/433/461/472/567 行硬编码 xl330） | 加 `--motor hls2909`（默认保持 xl330 兼容），kp_fw 从参数文件读 |
 | `scripts/validate_bam_testbench.py`（24/30/89/151） | 同参数化 + 阶跃判据对 HLS 用 77-86 的速度/加速度限制值 |
-| `src/mjlab_microduck/robot/testbench_constants.py` | 新增 `hls2909_test_bench`：摆锤几何/质量按 22.5g 舵机 + 120g 臂重；`motor_name="hls2909"` |
+| `src/mjlab_microduck/robot/testbench_constants.py` | 新增 `hls2909_test_bench`：摆锤几何/质量按 27.8g 舵机 + 120g 臂重；`motor_name="hls2909"` |
 | `scripts/infer_policy.py:892`（`load_model(xl330,m6)`）+ `--current-limit` | kt 来源改 `hls2909`；默认 `--current-limit 0.6`（0.6A×1.454≈0.87 N·m） |
 
 ## 6. 分阶段实施

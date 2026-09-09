@@ -215,3 +215,86 @@ uv run train Mjlab-Velocity-Flat-MicroDuck --env.scene.num-envs 4096 --hf-jobs
   export 流程均已读码核对。
 - 本机沙箱无 CUDA GPU 且 uv 缓存目录有权限问题，**未实际跑通训练**；
   `uv sync` 与 `uv run list-envs` 的实测结果见会话记录（如 GPU 就绪即可按 §3 顺序执行）。
+
+## 7. 真机"走路姿态"悬空回放(可选玩法)
+
+场景: 拿到一支训练好的行走策略,但只想先在真机上"悬空迈腿"看效果 —— 不跑
+策略网络,而是把它在仿真里走路时的关节角度录下来,再按 50 Hz 写回 15 个
+HL-2909-C001 舵机的目标位置寄存器,循环播放。
+
+```bash
+# 1) 录制(CPU MuJoCo, 默认 walk.onnx 即 9-02 那版 XL330 行走模型)
+uv run python scripts/record_walk_angles.py --onnx walk.onnx \
+    --lin-vel-x 0.15 --warmup 3 --duration 8 --out walk_angles.csv
+#    → walk_angles.csv (50Hz: time + target_<14关节> + measured_<14关节> + trunk_z_m)
+#    → walk_angles.json (元数据: 默认姿态/关节名/舵机ID/无缝循环窗口)
+
+# 2) 回放(先离线校验帧格式, 不碰串口)
+uv run --with pyserial python scripts/replay_walk_angles.py \
+    --csv walk_angles.csv --dry-run
+
+# 3) 真机回放 —— 鸭子拿稳/悬空后回车; 回车即上电开扭力; Ctrl+C 随时回 HOME
+uv run --with pyserial python scripts/replay_walk_angles.py \
+    --csv walk_angles.csv              # 默认 1.0x 循环, 遇 Ctrl+C 回到 HOME
+```
+
+要点:
+
+- **回放的是 `target_*` 列**(策略下发的目标角 = HOME 姿态 + action),与运行时
+  `robotd` 写入舵机的是同一量;`measured_*` 列是仿真实际达到的角度,只作对照。
+- 角度约定与运行时 `duck-control/src/ftbus.rs` 完全一致:
+  `tick = round((rad + π)·4096/2π)`,即 舵机中位 2048 = **关节机械零位**(装配/CAD
+  零位),**不是站立姿势**;全部关节同向 (+1)。站立姿势(HOME)下舵机应读到非 2048
+  的值:左 hip_roll 1991、左 hip_pitch **1749**、左 ankle **2343**、颈/头 pitch
+  2276、右 hip_pitch **2347**、右 ankle **1753** —— 若站立时读回来全为 2048,
+  说明是在站立姿势校的中位,每个关节偏了一个 HOME 角(最大 26.3°),回放会整体歪。
+  回放脚本启动时(开扭力前)会打印整张 `present vs home` 核对表,自检零位;
+  `--verify-home` 还会在回到 HOME 后再核对一次,`--apply-home-offset` 可将
+  实测常数偏差临时修正(治标;治本还是回机械位重做 0x0B 标定)。
+- 循环窗口: 录制端的 `loop_window_steps` 已按步态周期(自相关)取整,回放默认
+  用它,循环接缝无跳变。
+- 安全: 默认扭矩上电前有回车确认;全部目标被夹在 0..4095 单圈范围内(不会绕圈);
+  `--no-loop`/`--finish off` 可改为单次播放后松扭力。
+
+### 7.1 零位(中位)标定流程(换装/换舵机后必做)
+
+**零位是什么**: 每个关节在其模型/CAD 框架下角度=0 的姿势(仿真模型编译默认
+qpos 就是全 0,即 CAD 零位就是模型的自然零位)。站立姿势不是零位——站立时
+整条腿绕 hip_pitch 后倾 26.2°、脚踝前抬 25.95°(HOME 姿态)。
+
+1. **看参考图**: `uv run python scripts/render_zero_pose.py --out docs/zeronotes`
+   → `docs/zeronotes_zero_{side,front,quarter,leg_side}.png`(零位姿势)与
+   `_home_*`(站立姿势,同机位对照)。零位姿势的要点: 两腿完全竖直、脚掌水平、
+   躯干/头按图中几何。
+2. **逐关节摆姿势**: 从站立姿态把每个关节转到表中零位(或对着图摆):
+   每关节转动量 = −HOME 角(如 left_hip_pitch +26.24°、left_ankle −25.95°、
+   neck_pitch −20°;hip_yaw/knee/mouth ≈0)。
+3. **逐台校中位**(runtime 仓库, 单机连接、禁广播):
+   `python3 scripts/provision-hls.py --port /dev/ttyACM0 --home`
+   (0x0B 位置校准, 无参数=当前位置校到中位; HLS 固件 3.45 支持)。
+4. **复核**: 鸭子站直后 `uv run --with pyserial python scripts/check_hls_zero.py`
+   —— 每关节偏差应 ≈0(站姿读数 == 下表 home ticks,不是 2048)。
+   若全 2048: 是在站立姿势校的(错), 需按 1-3 重做; 需要临时演示可先
+   `replay --apply-home-offset`(常数修正, 效果等价于重标)。
+5. **回放**: `uv run --with pyserial python scripts/replay_walk_angles.py --csv walk_angles.csv`
+   (启动时同样打印零位核对表)。
+
+### 7.2 坐起立(替代走路)版本
+
+坐起立比走路好训练、演示也更好看(慢速大幅姿态,伺服零压力)。录制时用
+`--sitstand` 调度模式(指令 flag 0=站/1=坐,按时间表切换):
+
+```bash
+# 录制 8 s 循环: 站 2 s → 蹲 3 s → 站 3 s(50 Hz, 含无缝循环窗口)
+uv run python scripts/record_walk_angles.py \
+    --onnx /home/joyandai/microduck/policies/alpha_sitstand.onnx \
+    --sitstand /home/joyandai/microduck/policies/alpha_sitstand.onnx \
+    --sit-schedule "0:2.0,1:3.0,0:3.0" --out sitstand_angles.csv
+
+# 回放与走路完全相同(换 CSV 即可); 坐↔站转换瞬时步进大(>20 rad/s 需求),
+# 真机固件会自动限速平滑; 觉得快就加 --stretch 1.5
+uv run --with pyserial python scripts/replay_walk_angles.py --csv sitstand_angles.csv
+```
+
+已知点: 现有 alpha_sitstand 是 XL330 时代的模型,CPU 部署场景实测坐/起完整
+(站 z≈116mm、坐 z≈59mm、倾斜≤6°);零位/映射约定与走路完全一致。

@@ -26,7 +26,8 @@ SCENE_XML = "src/mjlab_microduck/robot/microduck/scene.xml"
 
 def run_eval(onnx_path: str, lin_vel_x: float = 0.0, seconds: float = 5.0,
              current_limit: float = 1.75, motor: str = "xl330",
-             use_projected_gravity: bool = True) -> dict:
+             model: str = "m6", use_projected_gravity: bool = True,
+             delay_min_lag: int = 0, delay_max_lag: int = 0) -> dict:
     model = mujoco.MjModel.from_xml_path(SCENE_XML)
     model.opt.timestep = 0.005
     data = mujoco.MjData(model)
@@ -35,7 +36,8 @@ def run_eval(onnx_path: str, lin_vel_x: float = 0.0, seconds: float = 5.0,
     # actuator scene; clip its output with the motor's kt * current limit.
     if current_limit > 0:
         from bam.model import load_model
-        kt = load_model(motor_name=motor, model="m6").kt.value
+        model_variant = "m6" if motor != "hls2909" else "m1"  # hls2909 目前只有 m1 档
+        kt = load_model(motor_name=motor, model=model_variant).kt.value
         tl = kt * current_limit
         model.actuator_forcerange[:, 0] = -tl
         model.actuator_forcerange[:, 1] = tl
@@ -44,7 +46,8 @@ def run_eval(onnx_path: str, lin_vel_x: float = 0.0, seconds: float = 5.0,
 
     policy = PolicyInference(model, data, walking_onnx_path=onnx_path,
                              new_cmd_obs=True,
-                             use_projected_gravity=use_projected_gravity)
+                             use_projected_gravity=use_projected_gravity,
+                             delay_min_lag=delay_min_lag, delay_max_lag=delay_max_lag)
     policy.set_vel_cmd(lin_vel_x, 0.0, 0.0)
 
     trunk = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "trunk_base")
@@ -91,10 +94,15 @@ def main() -> None:
     ap.add_argument("--seconds", type=float, default=6.0)
     ap.add_argument("--current-limit", type=float, default=1.75, help="A; <=0 disables")
     ap.add_argument("--motor", default="xl330")
+    ap.add_argument("--model", default=None, help="bam model tier (hls2909 -> m1)")
+    ap.add_argument("--delay-min", type=int, default=0)
+    ap.add_argument("--delay-max", type=int, default=0)
     args = ap.parse_args()
     print(f"=== headless eval: {args.onnx}  cmd=({args.lin_vel_x}, 0, 0) ===")
+    model_tier = args.model or ("m1" if args.motor == "hls2909" else "m6")
     res = run_eval(args.onnx, args.lin_vel_x, args.seconds,
-                   args.current_limit, args.motor)
+                   args.current_limit, args.motor, model=model_tier,
+                   delay_min_lag=args.delay_min, delay_max_lag=args.delay_max)
     for k, v in res.items():
         print(f"  {k:<26} = {v}")
 

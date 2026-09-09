@@ -8,7 +8,7 @@
     "error_gain": 0.166,
     "kd": 32,
     "max_velocity": 19.1637,
-    "max_acceleration": 38.6,
+    "max_acceleration": 500.0,
     "model": "m1",
     "actuator": "hls2909"
 }

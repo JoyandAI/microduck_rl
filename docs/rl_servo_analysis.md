@@ -1,6 +1,6 @@
 # Microduck RL 代码解析 —— 训练管线与舵机(BAM)相关代码
 
-> 本仓库: 800g / 25cm 双足机器人, 14 个舵机(现役 Dynamixel XL330 → 计划换
+> 本仓库: 874g / 25cm 双足机器人, 14 个舵机(现役 Dynamixel XL330 → 计划换
 > Feetech HL-2909-C001), mjlab(MuJoCo Warp) + rsl_rl(PPO) 训练, 50 Hz,
 > 导出 ONNX 后由 `pollen-robotics/microduck` 运行时部署到真机。
 > 配套可运行注释 demo: `scripts/demo_servo_action_flow.py`

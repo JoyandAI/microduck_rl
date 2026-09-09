@@ -60,17 +60,21 @@ def read_frame(ser, timeout: float = 0.3):
 
     FT-SCS reply: LEN = N_data + 2, and the frame body (ERR+DATA+CHECK) is
     exactly LEN bytes (PING reply FF FF 01 02 00 FC: LEN=2, ERR=00, CHECK=FC).
-    Returns (id, err, dataBytes) or None.
+    Returns (id, err, dataBytes) or None. 串口瞬时异常(ACM 设备偶发
+    "readiness to read but returned no data")按超时处理, 不打断扫描。
     """
     ser.timeout = timeout
-    head = ser.read(2)
-    if len(head) != 2 or head != HEAD:
+    try:
+        head = ser.read(2)
+        if len(head) != 2 or head != HEAD:
+            return None
+        pid = ser.read(1)
+        ln = ser.read(1)
+        if len(pid) != 1 or len(ln) != 1:
+            return None
+        body = ser.read(ln[0])  # ERR(1) + DATA + CHECK(1) == LEN
+    except serial.SerialException:
         return None
-    pid = ser.read(1)
-    ln = ser.read(1)
-    if len(pid) != 1 or len(ln) != 1:
-        return None
-    body = ser.read(ln[0])  # ERR(1) + DATA + CHECK(1) == LEN
     if len(body) != ln[0]:
         return None
     err = body[0]
@@ -97,6 +101,25 @@ def read_regs(ser, pid: int, addr: int, nbytes: int):
         return None
     return bytes(f[2][:nbytes])
 
+
+def build_write(pid: int, addr: int, data: bytes) -> bytes:
+    """INST_WRITE 帧: FF FF ID LEN 0x03 ADDR DATA... CHECK (FT-SCS, 协议 v0)。"""
+    params = bytes([addr]) + bytes(data)
+    ln = len(params) + 2
+    return HEAD + bytes([pid, ln, INST_WRITE]) + params + bytes([frame_checksum(pid, ln, INST_WRITE, params)])
+
+
+def write_regs(ser, pid: int, addr: int, data: bytes | list[int]) -> bool:
+    """写 n 字节(小端), 返回是否成功(无错误应答)。阻塞 0.15s 等待回执。
+
+    写应答帧 LEN=2: FF FF ID 02 ERR CHECK(无数据区)—— 帧解析后
+    f = (pid, err, b''), 错误在 f[1]。
+    """
+    ser.reset_input_buffer()
+    ser.write(build_write(pid, addr, bytes(data)))
+    f = read_frame(ser, timeout=0.15)
+    return f is not None and f[1] == 0
+
 # ---------------- 解码 ----------------
 
 RPM_TO_RAD_S = 2 * 3.141592653589793 / 60.0
@@ -110,10 +133,32 @@ def i16_le(b, i):
     return v - 65536 if v & 0x8000 else v
 
 
+def sm16(b, i):
+    """16 位符号幅值 (BIT15=符号, 低位=幅值) —— Goal_Velocity(46)/Present_Current(69)。"""
+    v = u16_le(b, i)
+    mag = v & 0x7FFF
+    return -mag if v & 0x8000 else mag
+
+
+def sm12(b, i):
+    """12 位符号幅值 (BIT11=符号, 低位=幅值) —— Homing_Offset(31)。"""
+    v = u16_le(b, i)
+    mag = v & 0x07FF
+    return -mag if v & 0x0800 else mag
+
+
+def sm11(b, i):
+    """11 位符号幅值 (BIT10=符号, 低位=幅值) —— Present_Load(60) 占空比。"""
+    v = u16_le(b, i)
+    mag = v & 0x03FF
+    return -mag if v & 0x0400 else mag
+
+
 # 读数计划: (地址, 字节数, 名称, 解码函数, 单位, 备注)
 READ_PLAN = [
     (0, 1, "固件主版本", u8, "", "只读"),
     (1, 1, "固件次版本", u8, "", "只读"),
+    (3, 2, "型号号", u16_le, "", "只读 ★确认型号 (HLS-3915M=5130 / HLS-2909=?)"),
     (5, 1, "主ID", u8, "号", "读写"),
     (6, 1, "波特率档位", u8, "档", "0..7 = 1M..38.4k"),
     (9, 2, "最小角度限制", u16_le, "0.087°", "绝对位置模式"),
@@ -129,13 +174,13 @@ READ_PLAN = [
     (27, 1, "负向不灵敏区", u8, "0.087°", "死区"),
     (28, 2, "保护电流", u16_le, "6.5mA", "上电赋给 44"),
     (30, 1, "角度分辨率", u8, "×", "传感器放大系数"),
-    (31, 2, "位置偏移", i16_le, "0.087°", "中位校准"),
+    (31, 2, "位置偏移", sm12, "0.087°", "中位校准(12bit 符号幅值)"),
     (33, 1, "运行模式", u8, "", "0=位置伺服 1=恒速 2=恒流 3=PWM"),
     (40, 1, "扭矩开关", u8, "", "0=关 1=开 2=阻尼"),
     (41, 1, "加速度", u8, "8.7°/s²/LSB", "0=最大"),
     (42, 2, "目标位置", i16_le, "0.087°", "SRAM, BIT15方向"),
     (44, 2, "目标电流", i16_le, "6.5mA", "SRAM, BIT15方向"),
-    (46, 2, "目标速度(运行速度)", i16_le, "0.732RPM", "SRAM, BIT15方向"),
+    (46, 2, "目标速度(运行速度)", sm16, "0.732RPM", "SRAM, 16bit 符号幅值"),
     (48, 2, "转矩限制", u16_le, "0.1%", "SRAM, 默认=16"),
     (50, 1, "Kp(实际生效)", u8, "", "位置环 P × 1/8 缩放"),
     (51, 1, "Kd(实际生效)", u8, "", "位置环 D × 1/4 缩放"),
@@ -143,13 +188,13 @@ READ_PLAN = [
     (55, 1, "锁标志", u8, "", "1=锁(EPROM掉电不存)"),
     (56, 2, "当前位置", i16_le, "0.087°", "反馈"),
     (58, 2, "当前速度", i16_le, "0.732RPM", "反馈"),
-    (60, 2, "当前负载(占空比)", lambda b, i: u16_le(b, i) & 0x0FFF, "0.1%", "反馈, BIT10方向"),
+    (60, 2, "当前负载(占空比)", sm11, "0.1%", "反馈, 11bit 符号幅值"),
     (62, 1, "当前输入电压", u8, "0.1V", "反馈 ★电源检查"),
     (63, 1, "当前温度", u8, "°C", "反馈"),
     (65, 1, "舵机状态", u8, "", "bit=错误"),
     (66, 1, "移动标志", u8, "", "bit0/bit1"),
     (67, 2, "目标位置(反馈)", i16_le, "0.087°", "反馈"),
-    (69, 2, "当前电流", i16_le, "6.5mA", "反馈, BIT15方向"),
+    (69, 2, "当前电流", sm16, "6.5mA", "反馈, 16bit 符号幅值"),
     (77, 1, "vFk(*10)", u8, "", "出厂参数(只读)"),
     (78, 1, "vKgI", u8, "", "出厂参数(只读)"),
     (79, 1, "pFk(*10)", u8, "", "出厂参数(只读)"),
