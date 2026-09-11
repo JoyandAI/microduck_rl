@@ -50,6 +50,20 @@
 | 时间怎么估 | 日志里 `Steps per second` ÷ 98304 = 每 iter 秒数；4090 级预期 ≥ 8 万 steps/s，明显低就要查瓶颈 |
 | 显存不够 | envs 减半（4096 → 2048 → 1024），算法不变 |
 
+### 0.3 2026-09-11 实测的 AutoDL 5090 实例（照着抄能避开几个坑）
+
+| 项 | 实测值 / 结论 |
+|---|---|
+| GPU | `NVIDIA GeForce RTX 5090, 32607 MiB, driver 580.105.08, compute_cap 12.0`；`nvidia-smi` 显示 `CUDA Version: 13.0` |
+| 磁盘 | `/`（系统盘）30 GB；`/root/autodl-tmp`（数据盘）50 GB —— venv + 缓存必须放数据盘 |
+| Python | 镜像自带 **conda Python 3.12.3**（`/root/miniconda3/bin/python`），PATH 里**没有** `python3` / `python3.12`，只有 `python` |
+| uv 托管解释器 | `uv venv --python 3.12` 默认会去 GitHub 下托管 Python。已让脚本优先复用系统 3.12；万一要下，先 `source /etc/network_turbo` 再 `uv python install 3.12`，并把它装进 `UV_PYTHON_INSTALL_DIR`（脚本默认 `/root/autodl-tmp/.microduck/uv-python`） |
+| 镜像源速度 | 清华 tuna **~1 MB/s（可用）**；`pypi.org` 直连 **56 KB/s（别用）** |
+| GitHub | 直连不稳，`source /etc/network_turbo` 后 200 ✓ |
+| 代理的副作用 | `/etc/network_turbo` 自己写明"对其他资源（如 pip 源）会更慢" ⇒ **只在装 uv / 下 Python 时开代理，装依赖时关掉** |
+| 安装耗时 | torch 的 CUDA 轮子合计约 4 GB，按 ~1 MB/s 全程 **约 1 小时** |
+| wandb | 不登录就 `WANDB_MODE=offline`（脚本 `--train` 会自动判断） |
+
 ---
 
 ## 1. 开工前：把代码传上去
@@ -325,7 +339,8 @@ uv run --no-sync scripts/infer_policy.py --standing standup.onnx --new-cmd-obs -
 | 装 bam 时 `zmq` 报错 / onnx 要现场编译 | 装成了 `vendor/bam[identification]` 或没加 `--no-deps`：卸掉重装本体 |
 | 训练时舵机像"刹车"、策略学不动 | `m5.json` 的 `kd` 是 192.68：`cp hd1910_calibration/params_recommended_m5.json vendor/bam/bam/params/hd1910/m5.json` |
 | `uv pip install` 下载慢/超时 | `UV_HTTP_TIMEOUT=600`（脚本已设）+ 清华镜像；仍失败用 `--upstream` 或 `source /etc/network_turbo` |
-| 镜像里没有 python3.12，`uv venv` 卡住 | uv 要去 GitHub 下载托管解释器：先 `source /etc/network_turbo` 再重跑 |
+| 镜像里没有 python3.12，`uv venv` 卡住 | 脚本会优先复用机器上已有的 3.12（如 conda 的 `/root/miniconda3/bin/python`）。真要下托管解释器：先 `source /etc/network_turbo`，再 `UV_PYTHON_INSTALL_DIR=/root/autodl-tmp/.microduck/uv-python uv python install 3.12`，然后**关掉代理**重跑脚本 |
+| `uv pip install` 下载只有几十 KB/s | 大概率开了学术代理（它自己声明会让 pip 源变慢）：关掉代理/重开一个 SSH 会话，用清华镜像（实测 ~1 MB/s，而 pypi.org 直连只有 56 KB/s） |
 | CUDA out of memory | `--env.scene.num-envs` 减半 |
 | wandb 卡在登录提示 | `export WANDB_MODE=offline`（脚本 --train 时自动判断） |
 | 磁盘满 | 清 `logs/`、`wandb/`；确认 `UV_CACHE_DIR` 在 `/root/autodl-tmp` |

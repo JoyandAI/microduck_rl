@@ -90,7 +90,28 @@ echo "uv $(uv --version | awk '{print $2}')"
 # --- venv (Python 3.12; pyproject pins >=3.12,<3.13) ---
 echo
 echo "==> creating .venv (Python 3.12)"
-uv venv --python 3.12 --allow-existing .venv
+# Prefer a Python 3.12 that is already on the machine (AutoDL images ship one in
+# /root/miniconda3) over uv's managed build: the managed interpreter is fetched from
+# GitHub releases, which is blocked on some instances unless the academic proxy is on.
+if [ -z "${UV_PYTHON_PREFERENCE:-}" ]; then
+  for cand in python3.12 python3 python; do
+    if command -v "$cand" >/dev/null 2>&1 && \
+       "$cand" -c 'import sys; sys.exit(0 if sys.version_info[:2] == (3, 12) else 1)' >/dev/null 2>&1; then
+      export UV_PYTHON_PREFERENCE=system
+      echo "python: reusing the existing 3.12 at $(command -v "$cand") (no managed download)"
+      break
+    fi
+  done
+fi
+if ! uv venv --python 3.12 --allow-existing .venv; then
+  cat >&2 <<'HINT'
+uv venv failed. If it was trying to download a managed Python and GitHub is blocked:
+    export UV_PYTHON_INSTALL_DIR=<data-disk>/.microduck/uv-python
+    ( source /etc/network_turbo; uv python install 3.12 )   # proxy on for GitHub only
+    bash scripts/autodl_setup.sh                            # then rerun (proxy off, mirror is faster)
+HINT
+  exit 1
+fi
 
 PIP=(uv pip install --python "$REPO_ROOT/.venv/bin/python" --index-url "$MIRROR")
 
