@@ -85,7 +85,7 @@ override-dependencies = [
 # Official BAM actuator model. Switch to `main` (or a tag) once the
 # mjlab-facing API lands there.
 # better-actuator-models = { git = "https://github.com/Rhoban/bam.git", branch = "mjlab_frictionloss" }
-# fetech-hls2909 换装分支: bam 已 vendor 到 vendor/bam (lockfile revision 62bd8ce),
+# fetech-hls2909 换装分支: bam 已 vendor 到 vendor/bam (bam @8d0025f, 2026-09-09 快照),
 # 以便在仓库内直接改 (寄存器文档: docs/feetech_hls_memtable.md, 计划: docs/actuator_physics_swap_plan.md)。
 # 回滚: 恢复 git 源 + git checkout 版本一致后用 uv sync 重新构建。
 better-actuator-models = { path = "vendor/bam", editable = true }
