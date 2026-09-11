@@ -93,13 +93,14 @@ def main() -> None:
     ap.add_argument("--lin-vel-x", type=float, default=0.0)
     ap.add_argument("--seconds", type=float, default=6.0)
     ap.add_argument("--current-limit", type=float, default=1.75, help="A; <=0 disables")
-    ap.add_argument("--motor", default="xl330")
-    ap.add_argument("--model", default=None, help="bam model tier (hls2909 -> m1)")
+    ap.add_argument("--motor", default="hd1910")
+    ap.add_argument("--model", default=None,
+                    help="bam model tier (hd1910 -> m5, hls2909 -> m1, else m6)")
     ap.add_argument("--delay-min", type=int, default=0)
     ap.add_argument("--delay-max", type=int, default=0)
     args = ap.parse_args()
     print(f"=== headless eval: {args.onnx}  cmd=({args.lin_vel_x}, 0, 0) ===")
-    model_tier = args.model or ("m1" if args.motor == "hls2909" else "m6")
+    model_tier = args.model or {"hd1910": "m5", "hd1909": "m5", "hls2909": "m1"}.get(args.motor, "m6")
     res = run_eval(args.onnx, args.lin_vel_x, args.seconds,
                    args.current_limit, args.motor, model=model_tier,
                    delay_min_lag=args.delay_min, delay_max_lag=args.delay_max)

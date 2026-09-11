@@ -308,17 +308,19 @@ def main() -> None:
     ap.add_argument("--duration", type=float, default=8.0,
                     help="seconds of trajectory recorded (replay loops over this)")
     ap.add_argument("--num-envs", type=int, default=1)
-    ap.add_argument("--motor-name", default="xl330",
-                    help="BAM motor to build the env with (walk.onnx was trained with xl330)")
-    ap.add_argument("--model", default="m6", help="BAM friction model; m6 = calibrated xl330")
+    ap.add_argument("--motor-name", default="hd1910",
+                    help="BAM motor to build the env with (default hd1910 = the servo the robot "
+                         "runs now; use xl330/m6 only to replay pre-swap policies)")
+    ap.add_argument("--model", default="m5", help="BAM friction model; m5 = HD-1910 pick (m6 = xl330)")
     ap.add_argument("--kp-fw", type=float, default=None)
-    ap.add_argument("--vin-range", default="6.5,8.2",
-                    help="per-env battery voltage DR, V (xl330-era default; HLS 12V = 10.5,12.6)")
+    ap.add_argument("--vin-range", default="4.75,5.25",
+                    help="per-env battery voltage DR, V (HD-1910 on a regulated 5 V rail; "
+                         "the old xl330-era value was 6.5,8.2 / HLS 12V was 10.5,12.6)")
     ap.add_argument("--vin-drop-gain", default="0.0,0.2",
                     help="load-dependent voltage sag gain range, V/Nm")
-    ap.add_argument("--vin-min", type=float, default=6.0)
-    ap.add_argument("--delay-min", type=int, default=3)
-    ap.add_argument("--delay-max", type=int, default=6)
+    ap.add_argument("--vin-min", type=float, default=4.0)
+    ap.add_argument("--delay-min", type=int, default=4)
+    ap.add_argument("--delay-max", type=int, default=7)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--out", default="walk_angles.csv")
     ap.add_argument("--sitstand", type=str, default=None, metavar="ONNX",

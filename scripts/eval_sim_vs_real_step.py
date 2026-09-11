@@ -56,9 +56,9 @@ def sim_step_response(
     (等价 MuJoCo dof_frictionloss 的静摩擦削顶), 无外负载。
     """
     import torch
-    model = load_model(motor_name="hls2909", model="m1")
+    model = load_model(motor_name="hd1910", model="m5")
     model.friction_base.value *= fric_scale if hasattr(model.friction_base, "value") else fric_scale
-    act = model.actuator                    # 真实 HLS2909Actuator
+    act = model.actuator                    # 真实 HD1910Actuator
     act.backend = TorchBackend()
     kt, R = model.kt.value, model.R.value
     fc = model.friction_base.value
