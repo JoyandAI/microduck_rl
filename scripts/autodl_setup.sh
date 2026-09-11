@@ -23,7 +23,7 @@
 if [ -z "${BASH_VERSION:-}" ]; then echo "run this with bash: bash scripts/autodl_setup.sh" >&2; exit 1; fi
 set -euo pipefail
 
-MIRROR="https://pypi.tuna.tsinghua.edu.cn/simple"
+MIRROR=""
 UPSTREAM=0
 DO_LIST=0
 DO_TRAIN=0
@@ -34,6 +34,7 @@ ITERS=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --upstream) UPSTREAM=1; shift ;;
+    --index)    MIRROR="${2:?--index needs a URL}"; shift 2 ;;
     --list)     DO_LIST=1; shift ;;
     --train)    DO_TRAIN=1; shift ;;
     --task)     TASK="${2:?}"; shift 2 ;;
@@ -43,7 +44,33 @@ while [ $# -gt 0 ]; do
     *) echo "unknown argument: $1" >&2; exit 1 ;;
   esac
 done
-[ "$UPSTREAM" = "1" ] && MIRROR="https://pypi.org/simple"
+
+# Which PyPI index to use, in order of precedence:
+#   --upstream  >  --index URL  >  UV_DEFAULT_INDEX / PIP_INDEX_URL  >
+#   the index already configured in the image's pip.conf  >  Tsinghua
+# AutoDL images ship a pip.conf pointing at a mirror that is usually the fastest
+# from their network, so prefer that over a hardcoded default.
+if [ "$UPSTREAM" = "1" ]; then
+  MIRROR="https://pypi.org/simple"
+elif [ -n "$MIRROR" ]; then
+  :                                                     # --index wins
+elif [ -n "${UV_DEFAULT_INDEX:-}" ]; then
+  MIRROR="$UV_DEFAULT_INDEX"
+elif [ -n "${PIP_INDEX_URL:-}" ]; then
+  MIRROR="$PIP_INDEX_URL"
+else
+  for conf in /etc/pip.conf "$HOME/.config/pip/pip.conf" "$HOME/.pip/pip.conf"; do
+    [ -f "$conf" ] || continue
+    MIRROR="$(awk -F'=' '/^[[:space:]]*index-url/{gsub(/[[:space:]]/, "", $2); print $2; exit}' "$conf")"
+    [ -n "$MIRROR" ] && { echo "index: $MIRROR (from $conf)"; break; }
+  done
+  [ -n "$MIRROR" ] || MIRROR="https://pypi.tuna.tsinghua.edu.cn/simple"
+fi
+
+# Huge CUDA wheels (nvidia-cublas / cudnn / cufft ...) are what make this install slow,
+# and mirrors tend to throttle single long transfers: let uv fetch several in parallel.
+export UV_CONCURRENT_DOWNLOADS="${UV_CONCURRENT_DOWNLOADS:-16}"
+UV_CACHE_GIVEN="${UV_CACHE_DIR:+1}"     # a caller-provided cache dir wins over the data-disk default
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
@@ -71,11 +98,14 @@ fi
 
 # --- keep caches and the venv on the data disk (AutoDL system disk is often 30 GB) ---
 if [ -d /root/autodl-tmp ] && [ -w /root/autodl-tmp ]; then
-  export UV_CACHE_DIR="/root/autodl-tmp/.microduck/uv-cache"
-  export UV_PYTHON_INSTALL_DIR="/root/autodl-tmp/.microduck/uv-python"
+  if [ -z "$UV_CACHE_GIVEN" ]; then
+    UV_CACHE_DIR="/root/autodl-tmp/.microduck/uv-cache"
+  fi
+  export UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR:-/root/autodl-tmp/.microduck/uv-python}"
   mkdir -p "$UV_CACHE_DIR" "$UV_PYTHON_INSTALL_DIR"
   echo "uv cache -> $UV_CACHE_DIR"
 fi
+export UV_CACHE_DIR="${UV_CACHE_DIR:-$HOME/.cache/uv}"
 export UV_HTTP_TIMEOUT=600          # the 30 s default always dies on 2 GB CUDA wheels
 
 # --- uv ---
