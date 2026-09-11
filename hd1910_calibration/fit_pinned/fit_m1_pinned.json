@@ -1,0 +1,1 @@
+{"armature": 0.0021725507818251416, "q_offset": 0.0050774481994660114, "command_delay": 0.026235236395562897, "friction_base": 0.01269430795165594, "friction_viscous": 0.010386056059075654, "kt": 0.7358, "R": 3.75, "error_gain": 0.163, "kd": 40.0, "max_velocity": 9.63, "max_acceleration": 500.0, "max_current": 3.25, "model": "m1", "actuator": "hd1910"}

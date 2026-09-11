@@ -1,0 +1,256 @@
+{
+  "actuator": "hd1910",
+  "model_name": "Feetech HD-1910-C001 (reg3=7946)",
+  "generated": "2026-09-10 18:51:48",
+  "supply_voltage_V": 5.0,
+  "how_to_read": "source: measured=台架实测 / readback=真机寄存器回读 / datasheet=规格书 / fitted=BAM 辨识产物 / assumption=未验证假设",
+  "parameters": {
+    "kt": {
+      "value": 0.692,
+      "unit": "N*m/A",
+      "source": "measured",
+      "method": "空载恒速法 duty*vin = ke*w + c 的斜率, ke≡kt (SI)",
+      "evidence": {
+        "runs": 2,
+        "legs": 48,
+        "ke_range": [
+          0.673,
+          0.699
+        ],
+        "r2": "0.991-0.998",
+        "viscous_corrected": 0.646,
+        "datasheet": 0.7358,
+        "ratio_to_datasheet": "93-95%"
+      }
+    },
+    "R": {
+      "value": 3.75,
+      "unit": "Ohm",
+      "source": "datasheet",
+      "note": "模型只用 kt/R；mode 4 电流钳位永不触发, R 单独值不影响仿真"
+    },
+    "kt_over_R": {
+      "value": 0.1845,
+      "unit": "N*m/A/Ohm",
+      "source": "measured",
+      "note": "= kt(实测 0.692)/R(说明书 3.75); 静态保持法独立测得 [0.16,0.23]"
+    },
+    "error_gain": {
+      "value": 0.163,
+      "unit": "-",
+      "source": "measured",
+      "method": "36 条非饱和样本回归 duty=5.2*Δq ÷ kp=32; R²≥0.94",
+      "note": "mode 4 有效 P 增益 ≈ kp/6.1（与 HLS 的 1/8 缩放不同）"
+    },
+    "kp": {
+      "value": 32,
+      "unit": "-",
+      "source": "readback",
+      "reg": "50/21"
+    },
+    "kd": {
+      "value": 40,
+      "unit": "-",
+      "source": "readback",
+      "reg": "51/22",
+      "note": "寄存器值；**有效 D 增益未测**(回归 D 系数≈0.03 vs 模型 1.66) → 待 T5"
+    },
+    "ki": {
+      "value": 0,
+      "unit": "-",
+      "source": "readback",
+      "reg": "52/23"
+    },
+    "p_scale": {
+      "value": 1.0,
+      "unit": "-",
+      "source": "measured",
+      "note": "P 斜率回归支持无 1/8 缩放"
+    },
+    "d_scale": {
+      "value": 4.0,
+      "unit": "-",
+      "source": "assumption",
+      "note": "D 强度扫频(kd=0.74/5/160 ↔ D 系数 0.03/0.20/1.63/6.52)在 72 条上独立验证 MAE 极差仅 0.0014 rad → **台架数据无法分辨 D 强度**；静态回归给出的 D 系数≈0.03(远弱于当前 1.63)。要定论必须做硬件 T5(不同 kd 下的阶跃响应)。⚠️ 对 RL 影响不小：当前 D=1.63 时，关节速度 >0.61 rad/s 光 D 项就饱和占空比。"
+    },
+    "max_pwm": {
+      "value": 1.0,
+      "unit": "-",
+      "source": "measured",
+      "note": "sin_time_square 饱和点实测 1.00"
+    },
+    "max_current": {
+      "value": 3.25,
+      "unit": "A",
+      "source": "readback",
+      "reg": "28/44=500",
+      "note": "实测 **reg44 在 mode 4 不钳流**；模型中该钳位不生效(R*Imax/vin>1)"
+    },
+    "max_velocity": {
+      "value": 8.0282,
+      "unit": "rad/s",
+      "source": "datasheet",
+      "note": "@6V 规格 9.6338 按 5V 折算；实测轨迹峰值 8.62 → 待空载全速实测"
+    },
+    "max_acceleration": {
+      "value": 500.0,
+      "unit": "rad/s^2",
+      "source": "assumption",
+      "note": "reg41=0 表示模式 4 无限幅；仅 use_rate_limiting 时用"
+    },
+    "friction_base": {
+      "value": 0.01492,
+      "unit": "N*m",
+      "source": "fitted",
+      "note": "72 条(2 杆长×3 砝码×4 轨迹×3 次), 钉死口径; 裸舵盘实测约 0.0100"
+    },
+    "friction_viscous": {
+      "value": 0.00903,
+      "unit": "N*m*s/rad",
+      "source": "fitted"
+    },
+    "armature": {
+      "value": 0.002354,
+      "unit": "kg*m^2",
+      "source": "fitted",
+      "note": "无独立测量"
+    },
+    "q_offset": {
+      "value": -0.00317,
+      "unit": "rad",
+      "source": "fitted",
+      "note": "与安装相关，机器人上是每关节零位"
+    },
+    "command_delay": {
+      "value": 0.02891,
+      "unit": "s",
+      "source": "fitted",
+      "note": "6 模型一致 0.023-0.031 s；总线往返实测 p50 1.82 ms（T9）"
+    },
+    "dead_zone": {
+      "value": 1,
+      "unit": "LSB(0.088deg)",
+      "source": "readback",
+      "reg": "26/27"
+    },
+    "backlash_hysteresis": {
+      "value": 1.2,
+      "unit": "LSB(0.105deg)",
+      "source": "measured",
+      "method": "T3 小步阶梯正反行程",
+      "note": "规格 ≤0.5deg → 实测远好于规格"
+    },
+    "stiction_onset_offset": {
+      "value": 5.0,
+      "unit": "LSB(0.44deg)",
+      "source": "measured",
+      "method": "T4 目标极缓上爬(0.5LSB/50ms)",
+      "note": "空载条件下；带载待测"
+    },
+    "auto_unload_at_rest": {
+      "value": false,
+      "unit": "-",
+      "source": "measured",
+      "method": "T6 保持 60s：位置稳定、duty→0、随后小步响应正常"
+    },
+    "bus_roundtrip_latency": {
+      "value": 1.82,
+      "unit": "ms(p50)",
+      "source": "measured",
+      "method": "T9 n=50 写目标+读位置",
+      "p95_ms": 1.92
+    },
+    "control_period_reg81": {
+      "value": 10,
+      "unit": "ms",
+      "source": "readback",
+      "reg": "81",
+      "note": "语义未证实：T2 实测 reg60 变化间隔中位 1.17ms → 非 10ms 阶梯，待定论"
+    },
+    "factory_eFk_reg82": {
+      "value": 60,
+      "unit": "raw(*10)",
+      "source": "readback",
+      "reg": "82",
+      "note": "若单位 0.1 V*s/rad → eFk≈0.6，与实测 kt 0.646-0.692 同量级而低于说明书 0.7358"
+    },
+    "gear_ratio": {
+      "value": 320,
+      "unit": ":1",
+      "source": "datasheet",
+      "note": "未验证"
+    }
+  },
+  "pending_tests": [
+    "T5 D 项硬件扫频(kd=16/40/100 阶跃响应) —— 软件路已证明台架轨迹分辨不出 D，必须实测才能定 d_scale",
+    "T7 热/降额 —— 模型无热参数, 仅影响整机长跑预算, 长测前补",
+    "过流保护真实行为(reg28=3.25A / reg44 不钳模) —— 需机械挡住",
+    "空载最高速实测(验证 max_velocity; 规格折算 8.03, 轨迹峰值见过 8.62)",
+    "5V 电源线阻实测(定 vin_drop_resistance_range 上限)",
+    "多舵机一致性 / 机器人侧关节零位与 URDF 对应",
+    "reg82 eFk / reg19,20 bit / reg77-79 出厂增益 语义(待官方内存表)",
+    "多舵机一致性 / 电压依赖 / 机器人侧关节零位与 URDF 对应",
+    "reg82 eFk / reg19,20 bit / reg77-79 出厂增益 语义(待官方内存表)"
+  ],
+  "artifacts": {
+    "fits": "hd1910_calibration/fit72/fit_m{1,2,3,4,5,6}_72.json (钉死口径, 72 条)",
+    "data": "hd1910_calibration/bench_all_processed(15cm 36) + bench_arm10_processed(10cm 36) + bench_combined72_processed(72)",
+    "measurements": "hd1910_calibration/kt_freerun/, hd1910_calibration/full_characterization/",
+    "scripts": [
+      "record_pendulum_bench.py",
+      "measure_kt_free_run.py",
+      "measure_hd1910_full.py"
+    ]
+  },
+  "bam_models": {
+    "dataset": "72 条 (2 杆长 10/15cm × 3 砝码 50/100/150g × 4 轨迹 × 3 次); 训练 48 / 独立验证 24 (每族最后一次 rep)",
+    "pinned": "kt=0.692(实测) R=3.75 error_gain=0.163 kd=40 max_current=3.25 (19 epoch CMA-ES 20000 trial)",
+    "validation_mae_rad": {
+      "m1": 0.0247,
+      "m2": 0.0233,
+      "m3": 0.0238,
+      "m4": 0.0245,
+      "m5": 0.0206,
+      "m6": 0.0265
+    },
+    "freefall_mae_rad": {
+      "m1": 0.0224,
+      "m2": 0.0187,
+      "m3": 0.0214,
+      "m4": 0.0226,
+      "m5": 0.0162,
+      "m6": 0.0389
+    },
+    "deployed_model": "m5",
+    "deployed_reason": "独立验证 MAE 最小(0.0206 rad = 1.18°); 且物理上最完整(方向分离的负载摩擦)",
+    "deployed_params": {
+      "kt": 0.692,
+      "R": 3.75,
+      "armature": 0.0022430991250649295,
+      "q_offset": 0.008087982067129268,
+      "friction_base": 0.013550748385667027,
+      "friction_stribeck": 0.0002866299268239173,
+      "dtheta_stribeck": 0.7895661117013417,
+      "alpha": 3.4645614981376727,
+      "friction_viscous": 0.008066421435690372,
+      "load_friction_motor": 0.01638114235528301,
+      "load_friction_external": 0.03720174903632928,
+      "load_friction_motor_stribeck": 0.6970603042932693,
+      "load_friction_external_stribeck": 0.07372371093037879,
+      "error_gain": 0.163,
+      "kd": 192.6762303226463,
+      "max_velocity": 8.0282,
+      "max_acceleration": 500.0,
+      "max_current": 3.25,
+      "command_delay": 0.025339691826625724,
+      "model": "m5",
+      "actuator": "hd1910"
+    },
+    "landing": [
+      "bam/bam/params/hd1910/m{1..6}.json",
+      "microduck_rl/vendor/bam/bam/params/hd1910/m{1..6}.json"
+    ],
+    "alt_batch": "同目录 m{1..6}_alt.json = 2026-09-10 16:49 的另一批拟合(独立验证 0.042-0.044 rad), 留档不用"
+  },
+  "note_supply": "整机与台架统一 5.0 V 稳压(2026-09-10 确认); 辨识数据全程 5.0-5.2 V ⇒ 参数直接迁移, 无需电压换算"
+}

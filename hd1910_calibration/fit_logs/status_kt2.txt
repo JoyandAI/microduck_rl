@@ -1,0 +1,4 @@
+m3(kd pinned) exit=0
+m2(kd pinned) exit=0
+m5(kd pinned) exit=0
+m6(kd pinned) exit=0
