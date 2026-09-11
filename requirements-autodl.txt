@@ -1,0 +1,48 @@
+# microduck_rl — AutoDL training dependencies (third-party libs only; the repo itself is installed separately)
+#
+# Usage (from the repo root):
+#   uv pip install --python .venv/bin/python \
+#       --index-url https://pypi.tuna.tsinghua.edu.cn/simple -r requirements-autodl.txt
+# or let scripts/autodl_setup.sh install these entries one line at a time, so a failure
+# stops exactly at the offending package.
+#
+# Versions come from the repo's uv.lock / the verified local environment.
+# Order matters: torch and warp first, mjlab last. Otherwise mjlab's ">= constraints"
+# can pull warp-lang 1.13+ (warp 1.15 removed `wp.context`, which mjlab 1.3 uses).
+
+# --- simulation core ---------------------------------------------------------
+torch==2.9.1                # deep learning + CUDA 12.8 runtime (PyPI x86_64 wheel ships sm_120, ready for RTX 5090)
+warp-lang==1.12.0           # physics engine behind MuJoCo Warp; must stay on 1.12.x
+mujoco==3.10.0              # CPU-side MuJoCo (export / rehearsal scripts)
+mujoco-warp==3.8.1          # GPU parallel physics (where the training FLOPs go); do not jump to 3.9+ (ls_parallel removed)
+mjlab==1.3.0                # training framework; pulls rsl-rl-lib==5.0.1 / tyro / wandb / tensorboard / viser / trimesh / tensordict
+
+# --- numerics / export -------------------------------------------------------
+numpy==2.4.1                # numerics
+scipy==1.18.0               # must be explicit: mjlab 1.3.0 imports scipy but never declares it (terrains)
+onnx==1.22.0                # ONNX export
+onnxscript==0.5.7           # torch -> ONNX export backend
+onnxruntime==1.24.4         # CPU deployment rehearsal (scripts/infer_policy.py)
+
+# --- used by helper scripts (safe to skip for pure training) -----------------
+matplotlib>=3.10.9          # plotting scripts
+huggingface_hub>=0.27.0     # --hf-jobs / uploads
+rustypot>=1.4.2             # servo bus (real-robot scripts)
+
+# --- in-repo BAM actuator models (HD-1910 params live here) ------------------
+# Base install only. NEVER write vendor/bam[identification] or [all]: that extra pins
+# the broken `zmq==0.0.0` stub wheel (no .dist-info) and drags protobuf back to <4.0,
+# which cascades onnx down to 1.17 (no wheel, source build fails).
+# We only use bam.model / bam.actuator / bam.actuators / bam.mjlab, whose real
+# dependencies are just numpy + colorama.
+-e ./vendor/bam
+
+# --- the repo itself (installed separately — deliberately not listed here) ---
+# After the packages above are in, run from the repo root:
+#   uv pip install --python .venv/bin/python --no-deps -e .
+# `--no-deps` is load-bearing: without it pip/uv pulls the unmodified
+# better-actuator-models from PyPI and overwrites vendor/bam (that copy has no
+# HD-1910 params), i.e. it silently swaps the actuator model.
+# This step does two things: puts src/mjlab_microduck on the venv path and registers
+# the `mjlab.tasks` entry point plus the `train` console script. Without it,
+# `list-envs` shows no Mjlab-*-MicroDuck task and training cannot start.
