@@ -80,10 +80,10 @@ def evaluate(model_path: Path, logs: dict, reset_period: float = 0.5) -> float:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--logdir", required=True)
-    ap.add_argument("--actuator", default="hls2909")
+    ap.add_argument("--actuator", default="hd1910")
     ap.add_argument("--models", nargs="+", default=["m1", "m6"])
     ap.add_argument("--trials", type=int, default=20000)
-    ap.add_argument("--out", default="hls2909_calibration/fit")
+    ap.add_argument("--out", default="hd1910_calibration/fit")
     args = ap.parse_args()
     args.out = str(Path(args.out))
     Path(args.out).mkdir(parents=True, exist_ok=True)

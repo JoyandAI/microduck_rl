@@ -72,6 +72,11 @@ def read_frame(ser, timeout: float = 0.3):
         ln = ser.read(1)
         if len(pid) != 1 or len(ln) != 1:
             return None
+        # 合法回复至少要有 ERR(1)+CHECK(1) 两个字节。实测 HD-1910 偶发 LEN=0 的
+        # 短帧(噪声/串扰), 旧代码会放行, 随后 body[0] 抛 IndexError 崩掉整轮采集
+        # (2026-09-10 记录脚本第 6 条记录处实测崩溃)。
+        if ln[0] < 2:
+            return None
         body = ser.read(ln[0])  # ERR(1) + DATA + CHECK(1) == LEN
     except serial.SerialException:
         return None
@@ -141,10 +146,14 @@ def sm16(b, i):
 
 
 def sm12(b, i):
-    """12 位符号幅值 (BIT11=符号, 低位=幅值) —— Homing_Offset(31)。"""
+    """位置偏移 reg31 符号幅值 (官方内存表: BIT15=符号, 其余位=幅值 0~4095)。
+
+    注: 早期注释曾按 BIT11=符号解码(与 sm16 风格混淆); 真机写侧从未实测,
+    record_pendulum_bench.center_zero_reg31 用 ±128 探针 + 双编码回退, 不依赖本函数。
+    """
     v = u16_le(b, i)
-    mag = v & 0x07FF
-    return -mag if v & 0x0800 else mag
+    mag = v & 0x7FFF
+    return -mag if v & 0x8000 else mag
 
 
 def sm11(b, i):
@@ -174,7 +183,7 @@ READ_PLAN = [
     (27, 1, "负向不灵敏区", u8, "0.087°", "死区"),
     (28, 2, "保护电流", u16_le, "6.5mA", "上电赋给 44"),
     (30, 1, "角度分辨率", u8, "×", "传感器放大系数"),
-    (31, 2, "位置偏移", sm12, "0.087°", "中位校准(12bit 符号幅值)"),
+    (31, 2, "位置偏移", sm12, "0.087°", "中位校准(BIT15 符号, 幅值0~4095)"),
     (33, 1, "运行模式", u8, "", "0=位置伺服 1=恒速 2=恒流 3=PWM"),
     (40, 1, "扭矩开关", u8, "", "0=关 1=开 2=阻尼"),
     (41, 1, "加速度", u8, "8.7°/s²/LSB", "0=最大"),
