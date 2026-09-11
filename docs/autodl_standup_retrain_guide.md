@@ -20,7 +20,7 @@
 | **Python** | **3.12**（`pyproject.toml` 锁 `>=3.12,<3.13`） | bam 与 HF Jobs 都按 3.12 对齐；脚本用 `uv venv --python 3.12` |
 | **CUDA toolkit** | **不用装** | 三方各自带自己的 CUDA，见 §0.1 |
 | **磁盘** | 仓库 / venv / uv 缓存都放 `/root/autodl-tmp`（数据盘） | 系统盘常只有 30 GB，venv 就 ~8 GB |
-| **代码上传** | **rsync 整个工作区**，不要只 `git clone` | 舵机参数等关键文件是 untracked，见 §1.1 |
+| **代码上传** | **从 Codeup clone**（`feat/feetech-hls2909`，HD-1910 那批文件已提交），或 rsync 工作区 | 见 §1.1 / §1.2 |
 
 ### 0.1 为什么"CUDA 12.8 镜像 + 5090"这条链路是通的
 
@@ -54,21 +54,36 @@
 
 ## 1. 开工前：把代码传上去
 
-### 1.1 必须传"工作区"，不能只 `git clone`
+### 1.1 推荐：直接从 Codeup clone
 
-这份仓库在 `feat/feetech-hls2909` 分支上做过 HD-1910 换装，**很多关键文件没进 git**：
+HD-1910 换装那一批文件**已经提交并推送到 Codeup**（分支 `feat/feetech-hls2909`），
+原先 untracked / 未提交的那批也一并进去了：`vendor/bam/bam/params/hd1910/`、
+`hd1910_calibration/`、`tests/test_hd1910_cfg.py`、`docs/*.md`、新增脚本。
+所以实例上直接 clone 就是完整可训练的一份：
 
-| 文件 | 状态 | 缺了会怎样 |
-|---|---|---|
-| `vendor/bam/bam/params/hd1910/*.json` | **untracked**（整个目录） | 舵机参数缺失，训练直接报错 |
-| `vendor/bam/bam/actuator.py` 等 | **modified 未提交** | 用的不是台架标定过的执行器律 |
-| `src/mjlab_microduck/robot/microduck/robot_*.xml` | **modified 未提交** | 机器人质量/惯量和 21 g 新舵机对不上 |
-| `hd1910_calibration/params_recommended_m5.json` | **untracked** | 少了修复版参数做对照（见 §2.5） |
-| `tests/test_hd1910_cfg.py`、`docs/*.md`、`scripts/eval_*.py` | **untracked** | 少了回归测试与评测工具 |
+```bash
+cd /root/autodl-tmp
+git clone -b feat/feetech-hls2909 \
+  https://codeup.aliyun.com/69692c5e66d410a0f264fd91/mircoduck_rl.git microduck_rl
+cd microduck_rl
+```
 
-自检：`git ls-files vendor/bam/bam/params/hd1910 | wc -l` → 返回 **0** 就说明这个目录没被 git 管着。
+- Codeup 在国内/AutoDL 上速度正常；私有库需要 Codeup 的账号或访问令牌（克隆时提示输入）。
+- 想用 SSH 而不是 HTTPS，就在 Codeup 控制台加公钥后用 `git@codeup.aliyun.com:...` 那个地址。
 
-**rsync 上传**（在本地仓库根目录执行，端口/地址用 AutoDL 控制台给的 SSH 信息）：
+**上传后确认这几个文件在**（缺 `vendor/bam/bam/params/hd1910/` 就一定训不了）：
+
+```bash
+ls vendor/bam/bam/params/hd1910/m5.json \
+   src/mjlab_microduck/robot/microduck/robot_allcollisions.xml \
+   hd1910_calibration/params_recommended_m5.json \
+   requirements-autodl.txt pyproject.toml
+```
+
+### 1.2 备选：rsync 本地工作区（还没提交的改动）
+
+如果你本地又改了代码还没提交，或者不想走 Codeup，就用 rsync 传工作区
+（在本地仓库根目录执行，端口/地址用 AutoDL 控制台给的 SSH 信息）：
 
 ```bash
 rsync -avzP -e "ssh -p <端口>" \
@@ -81,17 +96,9 @@ rsync -avzP -e "ssh -p <端口>" \
 - 两条 `hd1910_calibration/*` 的 exclude 挡掉 427 MB 台架原始数据（`fit_logs` 215 MB 等），只留 0.6 MB 参数文件。
 - 上传量约 **190 MB**（`vendor/` 23 MB + `src/` 29 MB + 其余）。
 - 没有 rsync 就 `scp -P <端口> -r ./ root@<地址>:/root/autodl-tmp/microduck_rl/`。
+- **别只 `git clone` 一份老的干净提交**：那样会缺上面那批 untracked 文件，训练直接失败。
 
-传完确认这几个文件在（脚本也会检查前两个）：
-
-```bash
-cd /root/autodl-tmp/microduck_rl
-ls vendor/bam/bam/params/hd1910/m5.json \
-   src/mjlab_microduck/robot/microduck/robot_allcollisions.xml \
-   pyproject.toml vendor/bam/pyproject.toml
-```
-
-### 1.2 磁盘：大件放数据盘
+### 1.3 磁盘：大件放数据盘
 
 ```bash
 df -h          # 看 / 和 /root/autodl-tmp
