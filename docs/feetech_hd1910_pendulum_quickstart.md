@@ -19,9 +19,13 @@
 |---|---|---|
 | 1 | 写序改 **B 式**：配置时 `46=max` 一次，之后**每拍只写** `42=目标 → 40=1`（正文实验命令不变，只改脚本内部） | B 式连做 16/16 全动最稳；HLS 原序 `46=0→42→40=1→46=32767` 在 mode 4 下**不动**（2026-09-09 实测） |
 | 2 | 配置段**不写 reg33=0**；脚本现在自动保持当前模式（读到 4 或 0 就不动） | 写 0 会切到模式 0（角度伺服+限力），与部署控制律不一致，识别结果不能用 |
-| 3 | 目标写入做**零位守卫**：q_zero 落在 300–3796 之外直接拒绝运行（配合"误差不回绕"） | mode 4 **有效目标被钳位 [0,4095] 且误差不回绕**：q_zero 靠近 0/4095 时小目标会冲向限位（实测 4094→338 走 -3755 LSB 长路径；写 6349 停在 4094） |
+| 3 | 目标写入做**零位守卫**：q_zero 落在安全带（=按所选轨迹实测峰值 + 64 LSB 余量，脚本自动算出；四轨迹限幅 80° 后 = **[975,3120]**）之外直接拒绝运行；脚本先尝试 reg31 位置偏移自动居中——**2026-09-10 实测更正：mode 4 控制环确实使用 reg31（原"不使用"结论错误）**，但**仍不能用它居中**：它只改报数，编码器原始读数与目标钳位 [0,4095] 不变，会把守卫骗过去而实际走不完轨迹（详见 `hd1910_servo_notes.md` §6.3）；失败后脚本打印本机**物理对准建议**（转舵机本体 α° 或拨舵盘 k 齿，按当前 q_zero 动态计算） | mode 4 **有效目标被钳位 [0,4095] 且误差不回绕**：q_zero 靠近 0/4095 时小目标会冲向限位（实测 4094→338 走 -3755 LSB 长路径；写 6349 停在 4094） |
 | 4 | 采集命令 `--id 1`（已通过 `setup_bench_servo.py --set-id 1` 改好） | 台架舵机 ID 已设为 1 |
-| 5 | ⚠️ **电流安全检查失效**：HD 的 reg69 反馈在运动中读 0（reg73 偏置 2040）→ 脚本的 `|I|>1.0A×0.7s` 自动中止在 HD 上不起作用 | 安全链只剩：温度(reg63) + 30s 看门狗 + 3A 物理保险丝 + 急停 —— 人为关注度要提高 |
+| 5 | ⚠️ **电流中止改为"HD 默认关闭" + 新增卡死检测（2026-09-10 修订）**：原 `\|I\|>1.0A×0.7s` 在 HD 上是**误报源**——mode 4 起步瞬态恒读 ≈2.1A（317 LSB）、单条峰值可达 4.06A，均超 5.1V/3.75Ω≈1.36A 的物理堵转上限，实测**一条轨迹都没跑完就误中止**（2.03A）。现脚本按型号自动选阈值：**HD-1910 → `--current-abort 0`（关闭）**，HLS 仍 1.0A；同时新增**位置误差卡死检测**（`--jam-err-rad 0.8` × `--jam-hold-s 1.0`：扭矩开启期间 `\|q−q_goal\|` 持续超限即断扭）。安全链 = 温度(reg63)>50°C + 30s 看门狗 + 卡死检测 + 3A 物理保险丝 + 人在场 | `hd1910_servo_notes.md` §6.5 T5 / §6.6⑤；2026-09-10 实测 2.03A 误中止，探针实测 reg69 运动中甚至出现负值（−3.0A） |
+| 6 | ⚠️ **串口短帧崩溃已修**：`read_hls_registers.read_frame` 遇 `LEN=0` 噪声帧会放行、随后在 `body[0]` 抛 `IndexError`，**一条坏帧杀掉整档采集**（2026-09-10 第 6 条记录处实测崩掉） | 现 `LEN<2` 按超时丢弃，采集可连续跑完 12 条 |
+| 7 | ⚠️ **每条记录改为"主动稳位"起跑（逐拍重写目标）**：原"目标回零 + 断扭 + 睡 0.5s"会让摆杆带余摆进入下一条，而日志首拍速度写 0 → 仿真以"静止"起跑与真机不符（实测 `pos@t0` 达 −0.635 rad、首秒误差 0.654 rad ≈ PASS 预算 0.157 rad 的 12%）。现记录间隙保持上扭、**逐拍重写目标**回 q_zero，连续满足 `\|q\|<0.02 rad` 且 `\|dq\|<0.25 rad/s` 达 0.25s 才起跑（实测 0.27–0.6s 收敛，残余 ≤0.006 rad）。⚠️ 目标**必须逐拍重写**：只写一次的"单发目标"实测不生效（摆杆 6s 停在旧目标处） | 2026-09-10 修复后 12 条 `pos@t0` = +0.003…+0.009 rad、首秒误差 ≤0.099 rad、rep 间位置范围重合 |
+| 8 | ⚠️ **摆角上限 + 防撞网（2026-09-10 实测：本台架摆动平面两侧都有硬障碍）**：**正侧 +96.7°**、**负侧 −88.4°**（负侧被顶住时占空比打到 **+1.00 = 100% 饱和**）。默认 `--amp-max-deg 80`：峰值超 80° 的轨迹**按比例整体缩放**（保波形、不削顶）；`--hard-limit-deg 86`：运行中任一采样 `\|q\|>86°` 立即断扭。缩放只改幅值、不改频率成分，**拟合按日志 `goal_position` 回放 → 不影响辨识口径**。⚠️ 首轮 100 g 的 12 条因 `sin_sin`(±100.8°) 两侧撞停、`lift_and_drop`(−90°) 距负侧障碍仅 2.4° 而**作废重录**，旧数据存 `hd1910_calibration/bench_collision_uncapped/` | 首轮实测：3 条 rep 在 +96.59/+96.68/+96.77° 被顶住 6–9 拍且指令继续到 +100.8°；负侧 −87.0～−88.5° 被顶住 19–21 拍、占空比 +1.00 |
+
 
 上电后先用 `tools/check_servo_bench.py --port /dev/ttyACM0 --id 1 --yes` 复检到 **PASS**（含空转），
 再进第 2 节正式采集。
@@ -58,8 +62,9 @@
 ```text
 kt = 0.736 N·m/A（规格书 7.5 kg·cm/A）      R ≈ 3.75 Ω（6V/1.6A 堵转）
 kp = 32 / kd = 40 / ki = 0（真机回读）       max_current = 3.25 A（reg28/44=500）
-max_velocity = 9.63 rad/s @6V（规格 92RPM）  max_acceleration = 500.0（限幅默认关，仅备用）
-供电 6.0 V；模型 vin=6.0；编码器 12-bit 0.088°/LSB；减速比 320:1
+max_velocity = 8.03 rad/s @5.0V（= @6V 规格 92RPM 的 9.63 按电压折算；限幅默认关，仅备用）
+max_acceleration = 500.0（仅备用）
+供电 **5.0 V**（2026-09-10 起台架与整机统一）；模型 vin=5.0；编码器 12-bit 0.088°/LSB；减速比 320:1
 ```
 
 ---
@@ -71,8 +76,8 @@ max_velocity = 9.63 rad/s @6V（规格 92RPM）  max_acceleration = 500.0（限�
 
 ### 2.1 台架就位（同 HLS）
 
-- [x] 装摆臂（先不装砝码）；C 夹 ×2 锁死；轴水平；手动摆 ±90° 无碰撞；摆动平面清空
-- [x] ⚠️HD **电源 = 5.0 V 稳压**（4–8.4V 内即可；6V 更好，5V 速度/力矩按比例降、仍 3 倍余量）
+- [x] 装摆臂（先不装砝码）；C 夹 ×2 锁死；轴水平；手动摆 **±101°** 无碰撞（默认轨迹集峰值 sin_sin ±100.8°）；摆动平面清空
+- [x] ⚠️HD **电源 = 5.0 V 稳压**（统一 5 V；4–8.4V 档内，堵转力矩 0.98 N·m、空载 8.03 rad/s，对台架最大重力矩 0.239 N·m 仍有 **4.1× 余量**）。⚠️ 必须是**独立电源**，不得用电脑 USB 口 5 V 给舵机供电（掉线重枚举的根因）
 - [x] ⚠️HD 供电电压会在每条 log 记录（reg62 中位数），拟合自动使用实测 `vin`，无需改模型
 - [x] ⚠️HD 舵机总线 ID=**1**（已改）；确认只有这一只在线（`--list-ports` + 扫描）
 
@@ -85,8 +90,8 @@ max_velocity = 9.63 rad/s @6V（规格 92RPM）  max_acceleration = 500.0（限�
   --trajectory up_and_down --reps 1 --out hd1910_calibration/pilot
 ```
 
-✅ 标准：输入 START 后，杆从下垂 0° 匀抬到 +90°（正方向正确）、无碰撞、`OK` 且样本 > 1000。
-→ 通过后按 50 → 100 → 150 g 顺序跑全量（每档一条命令，**只改 `--tip-mass`**）：
+✅ 标准：输入 START 后，杆从下垂 0° 匀抬到 +80°（正方向正确）、无碰撞、`OK` 且样本 > 1000。
+→ 通过后按 50 → 100 → 150 g 顺序跑全量（每档一条命令，**只改 `--tip-mass` 和 `--out`**）：
 
 **50 g 档：**
 ```bash
@@ -94,36 +99,55 @@ max_velocity = 9.63 rad/s @6V（规格 92RPM）  max_acceleration = 500.0（限�
   --tip-mass 0.0524 --arm-mass 0.0100 --arm-length 0.15 \
   --hub-mass 0.0021 --hub-radius 0.005 \
   --trajectory sin_time_square --trajectory sin_sin --trajectory lift_and_drop --trajectory up_and_down \
-  --reps 3 --limit-a 0.975 --torque-budget 0.35 --out hd1910_calibration/bench
+  --reps 3 --limit-a 0.975 --torque-budget 0.35 --out hd1910_calibration/bench_wegiht50_arm15
 ```
 
-**100 g 档：** 同 50 g 档命令，仅 `--tip-mass 0.1024`
+**100 g 档：** 同 50 g 档命令，改 `--tip-mass 0.1024`、`--out .../bench_weight100g_arm15`
 
-**150 g 档：** 同 50 g 档命令，仅 `--tip-mass 0.1524`
+**150 g 档：** 同 50 g 档命令，改 `--tip-mass 0.1524`、`--out .../bench_wegiht150_arm15`
 
-脚本要求输入 `START`（大写，确认手已离开摆动平面）。每档 12 条（4 轨迹 × 3 次），约 12–15 分钟。
-换砝码要点：重称"砝码片+螺栓"整套（2.4g 螺栓不变，砝码片 50/100/150g）→ 手动摆过 ±90° → 输入 START。
+⚠️ **每档必须换独立 `--out` 目录**：文件名只由「轨迹+tip质量+rep」决定，同 `--out` 会静默覆盖；而且档名进目录便于核对实物重量
+（2026-09-10 踩过：三档都写同一个 `--out` 时后一档直接覆盖前一档，且 `--tip-mass` 忘了改 → 记录质量与实物不符）。
+**重量核对法**：三档的准静态保持占空比（`up_and_down` 在 70–80° 区间、|dq|<0.1）应正比于 `m_eq·g·L_eq`，实测 0.123/0.239/0.381 ↔ 记录质量比 0.53/1.00/1.51 吻合即正确。
+
+脚本要求输入 `START`（大写，确认手已离开摆动平面）。每档 12 条（4 轨迹 × 3 次），约 2–3 分钟（含每条起跑前主动稳位）。
+换砝码要点：重称"砝码片+螺栓"整套（2.4g 螺栓不变，砝码片 50/100/150g）→ 手动摆过 **±85°**（限幅后峰值 80°）→ 输入 START。
 
 ### 2.5 数据检查
 
 ```bash
-ls hd1910_calibration/bench/*.json | grep -v manifest | wc -l   # 应 = 36
+for d in 50 100g 150; do ls hd1910_calibration/bench_wegiht${d}_arm15/*.json 2>/dev/null | wc -l; done   # 各 12
 ```
 
-### 2.6 拟合（同 HLS 流程，仅目录与 models 相同）
+### 2.6 拟合（三步：合并 → 重采样 → 拟合）
 
 ```bash
-/usr/bin/python3 scripts/process_bench_logs.py \
-  --in hd1910_calibration/bench --out hd1910_calibration/bench_processed --dt 0.005
+cd /home/joyandai/microduck_rl
+# ① 三档合并到一个目录（文件名的 tip 质量不同 → 不会重名；manifest 忽略）
+mkdir -p hd1910_calibration/bench_all
+for d in bench_wegiht50_arm15 bench_weight100g_arm15 bench_wegiht150_arm15; do
+  cp hd1910_calibration/$d/*.json hd1910_calibration/bench_all/
+done
+rm -f hd1910_calibration/bench_all/manifest.json
 
-.venv/bin/python scripts/fit_leg_pendulum.py \
-  --logdir hd1910_calibration/bench_processed \
-  --actuator hd1910 --models m1 m2 m3 m4 m5 m6 \
-  --trials 20000 --out hd1910_calibration/fit
+# ② 重采样到统一 5ms 网格
+/usr/bin/python3 scripts/process_bench_logs.py \
+  --in hd1910_calibration/bench_all --out hd1910_calibration/bench_all_processed --dt 0.005
+
+# ③ 拟合（依赖: optuna + cmaes；缺 cmaes 会报 ModuleNotFoundError）
+uv pip install cmaes -p .venv/bin/python
+for m in m1 m2 m3 m4 m5 m6; do
+  ( WANDB_MODE=offline .venv/bin/python scripts/fit_leg_pendulum.py \
+      --logdir hd1910_calibration/bench_all_processed \
+      --actuator hd1910 --models $m --trials 20000 --out hd1910_calibration/fit_$m \
+      > hd1910_calibration/fit_logs/$m.log 2>&1 ) &
+done; wait
 ```
 
-> ⚠️HD 拟合时用 `--actuator hd1910`（bam 已注册）；bam 侧版本要求 = 本仓库新版
-> （`HD1910Actuator` 在 `/home/joyandai/bam/bam/feetech/actuator.py`，editable install 已指向）。
+> ⚠️HD 拟合时用 `--actuator hd1910`（bam 已注册）。`bam` 解析到 `microduck_rl/vendor/bam`（与
+> `/home/joyandai/bam` 功能等价，仅 `kt` 差 0.0002 与注释差异）。
+> 实测速度：**≈0.04 s/trial**（24 条训练 log 回放）→ 20000 trial ≈ 13 分钟/模型，32 核可 6 进程并行。
+> 各模型独立 `--out` 是为了避免并行时 `mae_report.md` 互相覆盖；汇总见 2.7。
 
 ### 2.7 看结果
 
@@ -132,7 +156,12 @@ cat hd1910_calibration/fit/mae_report.md
 ```
 
 判定规则同 HLS：PASS = 独立验证 MAE < 0.157 rad；全过且无分叉 → 选 PASS 中 MAE 最小档，同等选 m1。
-落地路径：`bam/params/hd1910/mN.json`（当前只有 m1.json 初值档）。
+落地路径：`bam/params/hd1910/mN.json`。
+
+> ⚠️ **2026-09-10 实测补充：必须用"钉死物理参数"的口径判档**。自由拟合会把 `error_gain/kt/R/max_current`
+> 一起优化，结果离真机很远（`error_gain` 2.1–6.5 vs 台架实测 0.163），摩擦项在替控制模型代偿、**参数不可解释**；
+> 用 `bam.fit --set "{...}"` 把物理已知量钉死后，验证 MAE 只从 0.022 涨到 **0.028 rad**，且判档**反转**为
+> **m1（参数最少）最优**。完整结果、落地参数、复现命令见 **`hd1910_pendulum_results.md`**。
 
 ---
 
@@ -217,11 +246,11 @@ cat hd1910_calibration/fit/mae_report.md
 1. `m_tip·g·L ≤ 0.35 N·m`，禁止加大砝码；
 2. 摆动平面内手勿入/头勿探，操作站侧面；
 3. 砝码必须 M6 锁紧螺母 + 螺纹胶（甩出是最大风险）；
-4. 异常断电顺序：**先断 6 V，再拔 TTL**；
+4. 异常断电顺序：**先断舵机电源（5 V），再拔 TTL**；
 5. 全程人在场（`lift_and_drop` 一半时间是断扭矩自由落体）；
 6. ⚠️HD `_tip-mass` 挂载前**先断电源**；HD-1910 最大 8.4V，**严禁 12V 电源**；
 7. ⚠️HD 实验期间**不要**手动切模式（保持 33=4），否则与控制律假设不符；
-8. ⚠️HD 若发现"转了一整圈以上"（长路径）→ 立即停，检查 q_zero 是否靠近 0/4095。
+8. ⚠️HD 若发现"转了一整圈以上"（长路径）→ 立即停；正常情况零位守卫已先把安全带外的 q_zero 拒绝运行（脚本会打印物理对准建议：转舵机本体 α° 或拨舵盘 k 齿）。
 
 ---
 
@@ -230,9 +259,9 @@ cat hd1910_calibration/fit/mae_report.md
 | 现象 | 原因 | 处理 |
 |---|---|---|
 | 采集时舵机不动 | 写序还是 HLS 原序（见 ⚠️HD 0-1） | 改成 A/B 写序后重测 |
-| 位置跳变 > 180° | mode 4 误差不回绕，q_zero 在 0/4095 附近 | 重新装摆臂使垂线避开回绕区，或脚本加环绕感知 |
+| 位置跳变 > 180° | mode 4 误差不回绕，q_zero 在 0/4095 附近 | 超出安全带 [1211,2884] 时脚本直接拒绝并打印**物理对准建议**（转舵机本体 α°/拨舵盘 k 齿，动态计算）；reg31 居中已实测无效（mode 4 控制环不用它） |
 | 拟合用 `--actuator hls2909` 却想评估 HD | 名字填错 | 改 `hd1910` |
-| 电压报 5.1 V | 电源档不到位 | 调到 6.0 V（实验建议值） |
+| 电压报 5.1 V | 正常（统一 5 V 档） | 无需调整；若掉到 4.x V 说明电源带载能力不足或接线压降大 |
 | Kd 读出来是 40 | HD 出厂增益就是 40（不是 HLS 的 32） | 正常；模型默认已同步 |
 | 空转正常但跑不过 A/B 写序 | 没按 ⚠️HD 0-1 改代码 | 先适配，再体检到 PASS |
 
