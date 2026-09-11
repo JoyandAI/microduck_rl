@@ -58,11 +58,15 @@ class Model:
         self.max_load_friction = 0.5
         self.max_viscous_friction = 1.0
 
-    def reset(self) -> None:
+    def reset(self, env_ids=...) -> None:
         """
         Resets the model internal state
+
+        :param env_ids: Environments to reset when the model is evaluated over a
+            batch, see :meth:`bam.actuator.Actuator.reset`. Defaults to ``...``
+            (all of them).
         """
-        self.actuator.reset()
+        self.actuator.reset(env_ids)
 
     def set_actuator(self, actuator: Actuator) -> None:
         """Attach an actuator to this model and initialize its parameters.
@@ -76,6 +80,13 @@ class Model:
 
         # Offset of the motor (testbench error)
         self.q_offset = Parameter(0.0, -0.1, 0.1)
+
+        # Command delay [s]: transport/communication lag between the commanded goal
+        # position and the actuator response (serial-bus round-trip + firmware
+        # control period). Like q_offset, this is a rig-level nuisance parameter
+        # that is always identified. Applied in bam.simulate.Simulator.rollout_log
+        # by fractionally shifting the recorded goal-position sequence.
+        self.command_delay = Parameter(0.0, 0.0, 0.05)
 
         # Base friction is always here, stribeck friction is added when not moving [Nm]
         self.friction_base = Parameter(0.05, 0.0, self.max_friction_base)
@@ -105,8 +116,8 @@ class Model:
 
         if self.stribeck:
             # Stribeck velocity [rad/s] and curvature
-            self.dtheta_stribeck = Parameter(0.2, 0.01, 5.0)
-            self.alpha = Parameter(1.35, 0.5, 10.0)
+            self.dtheta_stribeck = Parameter(0.2, 0.10, 1.0)
+            self.alpha = Parameter(1.35, 1.0, 10.0)
 
         # Viscous friction [Nm/(rad/s)]
         self.friction_viscous = Parameter(0.1, 0.0, self.max_viscous_friction)
@@ -270,17 +281,36 @@ models = {
 }
 
 
-def _resolve_json_path(json_file: str | None, motor_name: str | None, model: str | None) -> str:
+# Alias motor names -> canonical bundled params directory. Keeps ONE copy of the
+# identified parameters so the two names cannot drift apart.
+#   hd1909 -> hd1910 : the lab's shorthand for the same Feetech HD-1910-C001.
+_MOTOR_ALIASES = {
+    "hd1909": "hd1910",
+}
+
+
+def _resolve_json_path(
+    json_file: str | None, motor_name: str | None, model: str | None
+) -> str:
     if json_file is not None:
         return json_file
     if motor_name is None or model is None:
         raise ValueError("Provide either json_file or both motor_name and model.")
+    motor_name = _MOTOR_ALIASES.get(motor_name, motor_name)
     params_root = Path(__file__).parent / "params"
     path = params_root / motor_name / f"{model}.json"
     if not path.exists():
         motor_dir = params_root / motor_name
-        available_models = sorted(p.stem for p in motor_dir.glob("*.json")) if motor_dir.exists() else []
-        available_motors = sorted(d.name for d in params_root.iterdir() if d.is_dir()) if params_root.exists() else []
+        available_models = (
+            sorted(p.stem for p in motor_dir.glob("*.json"))
+            if motor_dir.exists()
+            else []
+        )
+        available_motors = (
+            sorted(d.name for d in params_root.iterdir() if d.is_dir())
+            if params_root.exists()
+            else []
+        )
         raise FileNotFoundError(
             f"No bundled params for motor={motor_name!r} model={model!r}. "
             f"Available models for this motor: {available_models}. "
@@ -289,7 +319,9 @@ def _resolve_json_path(json_file: str | None, motor_name: str | None, model: str
     return str(path)
 
 
-def load_model(json_file: str = None, *, motor_name: str = None, model: str = None) -> Model:
+def load_model(
+    json_file: str = None, *, motor_name: str = None, model: str = None
+) -> Model:
     """Load a BAM friction model from a parameter file.
 
     Specify the source with **one** of two mutually exclusive approaches:
@@ -314,7 +346,8 @@ def load_model(json_file: str = None, *, motor_name: str = None, model: str = No
     with open(path) as f:
         data = json.load(f)
         return load_model_from_dict(data)
-    
+
+
 def load_model_from_dict(data: dict) -> Model:
     """Load a BAM friction model from a parameter dictionary.
 

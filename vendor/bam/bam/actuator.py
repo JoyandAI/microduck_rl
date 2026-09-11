@@ -13,7 +13,6 @@ from typing import TYPE_CHECKING, Union
 import numpy as np
 from .testbench import Testbench
 from bam.parameter import Parameter
-from .message import yellow, print_parameter
 
 if TYPE_CHECKING:
     import torch
@@ -36,10 +35,16 @@ class Backend:
     def clamp(self, x: ArrayLike, low: ArrayLike, high: ArrayLike) -> ArrayLike:
         raise NotImplementedError
 
+    def sign(self, x: ArrayLike) -> ArrayLike:
+        raise NotImplementedError
+
 
 class NumpyBackend(Backend):
     def clamp(self, x: ArrayLike, low: ArrayLike, high: ArrayLike) -> ArrayLike:
         return np.clip(x, low, high)
+
+    def sign(self, x: ArrayLike) -> ArrayLike:
+        return np.sign(x)
 
 
 class TorchBackend(Backend):
@@ -47,6 +52,11 @@ class TorchBackend(Backend):
         import torch
 
         return torch.clamp(x, low, high)
+
+    def sign(self, x: ArrayLike) -> ArrayLike:
+        import torch
+
+        return torch.sign(x)
 
 
 class Actuator:
@@ -62,6 +72,15 @@ class Actuator:
         is loaded (typically :class:`~bam.testbench.Pendulum`).
     """
 
+    #: Whether :meth:`compute_control` carries an internal state from one call to
+    #: the next (e.g. a firmware that rate-limits its internal target position).
+    #: Such an actuator must be called exactly once per timestep, in
+    #: chronological order. Callers that drive several *independent* simulations
+    #: with the same model instance must give each of them its own state, by
+    #: saving and restoring it around the call with :meth:`get_state` /
+    #: :meth:`set_state` (this is what :class:`bam.mujoco.MujocoController` does).
+    stateful: bool = False
+
     def __init__(self, testbench_class: Testbench):
         self.testbench_class = testbench_class
         self.testbench: Testbench | None = None
@@ -75,7 +94,32 @@ class Actuator:
         self.model = model
         self.initialize()
 
-    def reset(self):
+    def reset(self, env_ids=...) -> None:
+        """Reset the actuator's internal state (see :attr:`stateful`).
+
+        When the actuator is evaluated over a batch of environments (torch
+        backend), only part of them may be reset at a time. Because the state is
+        expressed in terms of the environment state (positions, velocities …),
+        which is not known here, the reset is expected to be *deferred*: the
+        actuator records which environments are pending and applies it at the
+        next :meth:`compute_control` call.
+
+        :param env_ids: Index of the environments to reset, in any form the
+            backend accepts (integer array/tensor, slice, mask). Defaults to
+            ``...``, which selects all of them.
+        """
+        pass
+
+    def get_state(self):
+        """Return the internal state of the control law, ``None`` if stateless.
+
+        The value is opaque and only meant to be handed back to
+        :meth:`set_state`. Only relevant when :attr:`stateful` is ``True``.
+        """
+        return None
+
+    def set_state(self, state) -> None:
+        """Restore an internal state previously returned by :meth:`get_state`."""
         pass
 
     def load_log(self, log: dict):
@@ -120,7 +164,11 @@ class Actuator:
         raise NotImplementedError
 
     def compute_torque(
-        self, control: ArrayLike | None, torque_enable: bool, q: ArrayLike, dq: ArrayLike
+        self,
+        control: ArrayLike | None,
+        torque_enable: bool,
+        q: ArrayLike,
+        dq: ArrayLike,
     ) -> ArrayLike:
         """Compute the motor torque from the control signal and current state.
 
@@ -138,9 +186,6 @@ class Actuator:
     def get_extra_inertia(self) -> float:
         """Return the actuator's apparent inertia added to the load [kg·m²]."""
         raise NotImplementedError
-
-    def to_mujoco(self):
-        raise NotImplementedError("This actuator doesn't support to_mujoco")
 
 
 class DCMotorActuator(Actuator):
@@ -205,7 +250,7 @@ class VoltageControlledActuator(DCMotorActuator):
         testbench_class: Testbench,
         vin: float,
         kp: float,
-        error_gain: float,
+        error_gain: float = 1.0,
         max_pwm: float = 1.0,
         max_current: float | None = None,
     ):
@@ -265,11 +310,16 @@ class VoltageControlledActuator(DCMotorActuator):
 
         # Physical PWM limit (voltage bounded by the battery) — applied last.
         duty_cycle = self.backend.clamp(duty_cycle, -self.max_pwm, self.max_pwm)
+        self.duty_cycle = duty_cycle  # for logging
 
         return self.vin * duty_cycle
 
     def compute_torque(
-        self, control: ArrayLike | None, torque_enable: bool, q: ArrayLike, dq: ArrayLike
+        self,
+        control: ArrayLike | None,
+        torque_enable: bool,
+        q: ArrayLike,
+        dq: ArrayLike,
     ) -> ArrayLike:
         """Compute motor torque using the DC motor equation with back-EMF.
 
@@ -291,24 +341,6 @@ class VoltageControlledActuator(DCMotorActuator):
         torque -= (self.model.kt.value**2) * dq / self.model.R.value
         return torque * torque_enable
 
-    def to_mujoco(self):
-        if self.vin == 0 or self.kp == 0:
-            print(yellow(f"WARNING: kp or vin are not set"))
-
-        kt = self.model.kt.value
-        R = self.model.R.value
-
-        kp = self.error_gain * self.kp * self.vin * self.max_pwm * kt / R
-        damping = self.model.friction_viscous.value + kt**2 / R
-
-        print_parameter("forcerange", self.vin * self.model.kt.value / R)
-        print_parameter("armature", self.model.armature.value)
-        print_parameter("kp", kp)
-        print_parameter("damping", damping)
-        print_parameter("frictionloss", self.model.friction_base.value)
-
-        print("")
-
 
 class CurrentControlledActuator(DCMotorActuator):
     """Current-controlled servo with a firmware P-position controller.
@@ -323,7 +355,7 @@ class CurrentControlledActuator(DCMotorActuator):
     """
 
     def __init__(
-        self, testbench_class: Testbench, vin: float, kp: float, error_gain: float
+        self, testbench_class: Testbench, vin: float, kp: float, error_gain: float = 1.0
     ):
         super().__init__(testbench_class, vin, kp)
         self.error_gain = error_gain
@@ -334,7 +366,6 @@ class CurrentControlledActuator(DCMotorActuator):
     def initialize(self):
         super().initialize()
         self.model.current_limit = Parameter(1.5, 0, 3)
-        self.model.viscous_damping_with_torque = Parameter(0.0, 0.0, 0.1)
 
     def compute_control(
         self, q_target: ArrayLike, q: ArrayLike, dq: ArrayLike, dt: float
@@ -372,45 +403,21 @@ class CurrentControlledActuator(DCMotorActuator):
         return current
 
     def compute_torque(
-        self, control: ArrayLike | None, torque_enable: bool, q: ArrayLike, dq: ArrayLike
+        self,
+        control: ArrayLike | None,
+        torque_enable: bool,
+        q: ArrayLike,
+        dq: ArrayLike,
     ) -> ArrayLike:
         """Compute motor torque from current command.
 
-        :math:`\\tau = k_t I - b_{\\text{active}} \\dot{q}`
+        :math:`\\tau = k_t I`
 
         :param control: Current command(s) [A].
         :param torque_enable: If ``False``, returns zero torque.
         :param q: Current joint angle(s) [rad] (unused here).
-        :param dq: Current joint velocity(ies) [rad/s].
+        :param dq: Current joint velocity(ies) [rad/s] (unused here).
         :returns: Motor torque [Nm].
         """
-        torque = (
-            self.model.kt.value * control
-            - self.model.viscous_damping_with_torque.value * dq
-        )
+        torque = self.model.kt.value * control
         return torque * torque_enable
-
-    def to_mujoco(self):
-        if self.vin == 0 or self.kp == 0:
-            print(yellow(f"WARNING: kp or vin are not set"))
-
-        kt = self.model.kt.value
-
-        kp = self.error_gain * self.kp * kt
-        damping = (
-            self.model.friction_viscous.value
-            + self.model.viscous_damping_with_torque.value
-        )
-
-        forcerange = self.vin * self.model.kt.value / self.model.R.value
-        forcerange = min(
-            forcerange, self.model.current_limit.value * self.model.kt.value
-        )
-
-        print_parameter("forcerange", forcerange)
-        print_parameter("armature", self.model.armature.value)
-        print_parameter("kp", kp)
-        print_parameter("damping", damping)
-        print_parameter("frictionloss", self.model.friction_base.value)
-
-        print("")

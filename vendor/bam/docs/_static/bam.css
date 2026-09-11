@@ -19,3 +19,85 @@ h1, h2 {
   text-align: center;
   vertical-align: middle;
 }
+
+video {
+    width: 100%;
+    max-width:700px;
+    display: block;
+    margin-left: auto;
+    margin-right: auto;
+}
+
+/* Getting started cards */
+.bam-getting-started {
+    margin-top: 1.5rem;
+    margin-bottom: 1rem;
+}
+
+.bam-card {
+    border-radius: 0.6rem;
+    transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+}
+
+.bam-card:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+    border-color: var(--pst-color-primary);
+}
+
+.bam-card .sd-card-title {
+    font-size: 1.15rem;
+}
+
+/* Float the card footer link to the right */
+.bam-card .sd-card-footer {
+    text-align: right;
+}
+
+/* "Use in simulation" buttons on the identified-actuators table */
+.actuators-table td {
+    vertical-align: middle;
+}
+
+.motor-btn {
+    display: block;
+    width: 100%;
+    margin: 0.25rem 0;
+    white-space: nowrap;
+}
+
+/* Compact inline warning that fits inside a table cell */
+.mini-warning {
+    margin: 0.5rem 0 0;
+    font-size: 0.8em;
+    line-height: 1.35;
+    color: var(--pst-color-warning, #966600);
+}
+
+.mini-warning code {
+    font-size: 0.9em;
+}
+
+/* Banner shown on usage pages indicating the motor the examples target */
+.motor-banner {
+    display: flex;
+    align-items: center;
+    gap: 1.25rem;
+    margin-bottom: 1.5rem;
+}
+
+.motor-banner-img {
+    flex: 0 0 auto;
+    width: 90px;
+    height: auto;
+    margin: 0;
+    border-radius: 0.4rem;
+}
+
+.motor-banner-text {
+    flex: 1 1 auto;
+}
+
+.motor-banner-text p:last-child {
+    margin-bottom: 0;
+}

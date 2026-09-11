@@ -46,14 +46,36 @@ from mjlab.utils.spec import create_motor_actuator
 from mjlab.scene import Scene, SceneCfg
 from mjlab.sim import MujocoCfg, Simulation, SimulationCfg
 from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
-from mjlab.managers.event_manager import RecomputeLevel
+from mjlab.managers.event_manager import RecomputeLevel, requires_model_fields
 
 from .actuator import TorchBackend, VoltageControlledActuator
 from .model import Model, load_model, _resolve_json_path
+from .simulate import fractional_delay_shift
 from .testbench_mujoco import Pendulum
 
 if TYPE_CHECKING:
     from mjlab.entity import Entity
+
+
+@requires_model_fields("dof_frictionloss", "dof_damping")
+def bam_init(env, env_ids=None) -> None:
+    """Startup event that expands BamActuator's per-world friction fields.
+
+    :class:`BamActuator` writes a per-environment friction budget into MuJoCo's
+    ``dof_frictionloss`` and ``dof_damping`` model fields. Those fields must be
+    expanded per world (otherwise they alias one shared buffer and per-env writes
+    are invalid). Add this as a ``startup`` event and mjlab expands them for you::
+
+        from bam.mjlab import bam_init
+        from mjlab.managers.event_manager import EventTermCfg
+
+        events["bam_init"] = EventTermCfg(func=bam_init, mode="startup")
+
+    The body is intentionally a no-op: the ``@requires_model_fields`` decorator
+    does the work by registering the fields in the EventManager, which the env
+    then hands to ``sim.expand_model_fields()`` during setup.
+    """
+    del env, env_ids
 
 
 # MuJoCo constraint-type id for a per-DOF friction constraint. In MuJoCo Warp the
@@ -74,7 +96,9 @@ class BamActuatorCfg(ActuatorCfg):
     * **Custom JSON**: set ``json_path`` to a BAM params JSON file produced by
       ``bam.fit``.
 
-    :param motor_name: Name of the bundled motor. Currently supported: "xl330", "xl320", "mx106", "mx64", "erob80:50", and "erob80:100". Mutually exclusive with ``json_path``.
+    :param motor_name: Name of a bundled motor: any name with a params
+        directory bundled with the library (e.g. ``"xl330"``, ``"mx106"``,
+        ``"hd1910"``, ``"hls2909"``). Mutually exclusive with ``json_path``.
     :param model: Model variant to use with ``motor_name``, one of "m1"–"m6". Mutually exclusive with ``json_path``.
     :param json_path: Path to a custom BAM params JSON file produced by ``bam.fit``. Mutually exclusive with ``motor_name`` and ``model``.
     :param target_names_expr: Tuple of regex patterns to match actuated joint names.
@@ -82,13 +106,18 @@ class BamActuatorCfg(ActuatorCfg):
     :param kp_fw: Firmware P-gain override. ``None`` → uses the value in the JSON.
     :param vin_range: If set, a per-env battery voltage is sampled uniformly from this
         range at startup and held constant across resets. Takes precedence over ``vin``.
-    :param vin_drop_gain_range: If set, a per-env internal-resistance gain [V/Nm] is sampled uniformly
-        from this range at startup. Models the voltage drop V_drop = gain * Σ|τ| due to
-        battery + cable resistance. Gain should be approximately resistance / Kt.
-        Held constant across resets.
+    :param vin_drop_resistance_range: If set, a per-env battery + wire resistance [Ohm] is sampled
+        uniformly from this range at startup. Models the voltage drop V_drop = R * I due to
+        battery + cable resistance, where the current I [A] is estimated from the actuator
+        torques as Σ|τ| / Kt. Held constant across resets.
     :param vin_min: Hard lower bound on the effective supply voltage [V] after applying the
         voltage drop. Ensures ``vin`` never falls below this value regardless of the load.
         ``None`` → no lower bound.
+    :param friction_scale_range: If set, a per-env friction scale is sampled uniformly from
+        this range (e.g. ``(0.8, 1.2)``) at startup and held constant across resets. The scale
+        multiplies the whole friction budget (the ``frictionloss`` written into MuJoCo), so
+        every friction term (Coulomb, Stribeck, load-dependent) is scaled together.
+        ``None`` → no randomization (scale 1.0).
     :param delay_min_lag: Minimum command delay in simulation steps. Models the latency
         between the policy output and the motor response. ``0`` → no delay.
     :param delay_max_lag: Maximum command delay in simulation steps. Set greater than
@@ -113,8 +142,9 @@ class BamActuatorCfg(ActuatorCfg):
     vin: float | None = None
     kp_fw: float | None = None
     vin_range: tuple[float, float] | None = None
-    vin_drop_gain_range: tuple[float, float] | None = None
+    vin_drop_resistance_range: tuple[float, float] | None = None
     vin_min: float | None = None
+    friction_scale_range: tuple[float, float] | None = None
     stiff_frictionloss: bool = True
 
     def __post_init__(self) -> None:
@@ -159,12 +189,15 @@ class BamActuator(Actuator):
     .. important::
         Because every environment carries a different friction budget, the
         ``dof_frictionloss`` and ``dof_damping`` model fields must be expanded
-        per world *before* stepping. After building the environment, call::
+        per world *before* stepping. The simplest way is to add the
+        :func:`bam_init` startup event::
 
-            env.sim.expand_model_fields(("dof_frictionloss", "dof_damping"))
+            from bam.mjlab import bam_init
+            events["bam_init"] = EventTermCfg(func=bam_init, mode="startup")
 
-        (or add a ``randomize_field`` event for those fields). Otherwise the
-        fields alias a single shared buffer and per-env writes are invalid.
+        (equivalently, call ``env.sim.expand_model_fields(("dof_frictionloss",
+        "dof_damping"))`` after building the environment). Otherwise the fields
+        alias a single shared buffer and per-env writes are invalid.
 
     Per-environment gain scaling is supported via :meth:`set_gains`.
     """
@@ -200,8 +233,8 @@ class BamActuator(Actuator):
         self._dof_ids: torch.Tensor | None = None
 
         self.vin_tensor: torch.Tensor | None = None
-        self.vin_drop_gain: torch.Tensor | None = None
-        self._prev_motor_torque: torch.Tensor | None = None
+        self.vin_drop_resistance: torch.Tensor | None = None
+        self.friction_scale: torch.Tensor | None = None
 
         self.kp_scale: torch.Tensor | None = None
         self.kd_scale: torch.Tensor | None = None
@@ -327,6 +360,9 @@ class BamActuator(Actuator):
         # Delegate the control law / torque equation to the BAM actuator, run on
         # the Torch backend so its clamps are vectorized over (num_envs, num_joints).
         act.backend = TorchBackend()
+        # Drop any internal firmware state left over from a previous sim: it is
+        # shaped after the old (N, J).
+        bam.reset()
         # Base firmware gain and physics timestep, captured before compute() starts
         # overwriting act.kp / act.vin with per-env tensors each step.
         self._base_kp = float(act.kp)
@@ -342,18 +378,21 @@ class BamActuator(Actuator):
                 (num_envs, 1), act.vin, dtype=torch.float32, device=device
             )
 
-        # vin_drop_gain: (N, 1) — per-env resistance gain [V/Nm], constant across resets
-        if self.cfg.vin_drop_gain_range is not None:
-            self.vin_drop_gain = torch.empty(
+        # vin_drop_resistance: (N, 1) — per-env battery + wire resistance [Ohm], constant across resets
+        if self.cfg.vin_drop_resistance_range is not None:
+            self.vin_drop_resistance = torch.empty(
                 num_envs, 1, dtype=torch.float32, device=device
-            ).uniform_(*self.cfg.vin_drop_gain_range)
+            ).uniform_(*self.cfg.vin_drop_resistance_range)
         else:
-            self.vin_drop_gain = None
+            self.vin_drop_resistance = None
 
-        # Previous motor torques for the voltage-drop computation (lagged 1 step)
-        self._prev_motor_torque = torch.zeros(
-            num_envs, num_joints, dtype=torch.float32, device=device
-        )
+        # friction_scale: (N, 1) — per-env friction budget scale, constant across resets
+        if self.cfg.friction_scale_range is not None:
+            self.friction_scale = torch.empty(
+                num_envs, 1, dtype=torch.float32, device=device
+            ).uniform_(*self.cfg.friction_scale_range)
+        else:
+            self.friction_scale = None
 
         vin_repr = (
             f"range={self.cfg.vin_range}"
@@ -361,9 +400,14 @@ class BamActuator(Actuator):
             else f"{act.vin:.1f}V"
         )
         drop_repr = (
-            f"drop_gain_range={self.cfg.vin_drop_gain_range}"
-            if self.cfg.vin_drop_gain_range is not None
+            f"drop_resistance_range={self.cfg.vin_drop_resistance_range}"
+            if self.cfg.vin_drop_resistance_range is not None
             else "no drop"
+        )
+        friction_scale_repr = (
+            f"friction_scale_range={self.cfg.friction_scale_range}"
+            if self.cfg.friction_scale_range is not None
+            else "friction_scale=1.0"
         )
         vin_for_limit = (
             max(self.cfg.vin_range) if self.cfg.vin_range is not None else act.vin
@@ -376,18 +420,21 @@ class BamActuator(Actuator):
             f"vin={vin_repr} {drop_repr} force_limit=±{force_limit:.2f}Nm "
             f"friction_base={bam.friction_base.value:.4f} "
             f"friction_viscous={bam.friction_viscous.value:.4f} "
+            f"{friction_scale_repr} "
             f"envs={num_envs} device={device}"
         )
 
     def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
         super().reset(env_ids)
-        # vin_tensor and vin_drop_gain are startup-randomized: do NOT re-sample on reset.
-        # Reset previous motor torques so the voltage-drop model starts clean.
-        if self._prev_motor_torque is not None:
-            if env_ids is None:
-                self._prev_motor_torque.zero_()
-            else:
-                self._prev_motor_torque[env_ids] = 0.0
+        # vin_tensor, vin_drop_resistance and friction_scale are startup-randomized:
+        # do NOT re-sample on reset.
+
+        # A reset teleports the joints, so any internal state the firmware keeps
+        # for those environments has to follow (a stateful control law otherwise
+        # keeps driving them from the state of their previous episode). The BAM
+        # actuator applies it at the next compute(), where the joint state is
+        # available; the other environments are left untouched.
+        self._bam_model.reset(... if env_ids is None else env_ids)
 
     @property
     def command_field(self) -> CommandField:
@@ -438,6 +485,10 @@ class BamActuator(Actuator):
         * **m4**: m3 + Stribeck load friction
         * **m5**: directional load friction (``directional=True``)
         * **m6**: m5 + quadratic Stribeck load term (``quadratic=True``)
+
+        When ``cfg.friction_scale_range`` is set, the resulting budget is
+        multiplied by the per-env friction scale (broadcast over the joints), so
+        all friction terms are scaled together.
         """
         bam = self._bam_model
         frictionloss = torch.full_like(motor_torque, bam.friction_base.value)
@@ -493,6 +544,9 @@ class BamActuator(Actuator):
                         * gearbox_torque
                     )
 
+        if self.friction_scale is not None:
+            frictionloss = frictionloss * self.friction_scale  # (N, 1) broadcast
+
         return frictionloss
 
     def _write_frictions(self, frictionloss: torch.Tensor, damping: float) -> None:
@@ -513,13 +567,20 @@ class BamActuator(Actuator):
             # Per-env writes require truly per-world storage. A non-expanded
             # field aliases a single (1, nv) buffer (stride 0 on the world axis),
             # so writing distinct per-env values would be invalid.
-            if self._num_envs > 1 and fl_field.stride(0) == 0:
+            if self._num_envs > 1 and (
+                fl_field.stride(0) == 0 or damping_field.stride(0) == 0
+            ):
                 raise RuntimeError(
                     "BamActuator writes per-environment dof_frictionloss/"
                     "dof_damping, but these model fields are not expanded per "
-                    "world. After building the environment, call "
+                    "world. Add the bam_init startup event so mjlab expands them "
+                    "automatically:\n"
+                    "    from bam.mjlab import bam_init\n"
+                    "    events['bam_init'] = EventTermCfg(func=bam_init, "
+                    "mode='startup')\n"
+                    "Alternatively, after building the environment, call "
                     "sim.expand_model_fields(('dof_frictionloss', "
-                    "'dof_damping')) (or add a randomize_field event for them)."
+                    "'dof_damping'))."
                 )
             self._friction_fields_checked = True
 
@@ -598,11 +659,34 @@ class BamActuator(Actuator):
         assert self._data is not None and self._dof_ids is not None
         assert self._mjwarp_model is not None
 
+        # Actuator torque applied on the PREVIOUS solve (lagged one step). The BAM
+        # friction budget uses this (not the freshly-computed motor_torque) as the
+        # motor-side load, and the battery voltage-drop model combines it with the
+        # previous duty cycle to estimate the supply current. Mirrors
+        # bam.mujoco.MujocoController.
+        prev_actuator_torque = self._as_tensor(self._data.qfrc_actuator)[
+            :, self._dof_ids
+        ]  # (N, J)
+
         # ── Per-env supply voltage (with optional battery drop) ──────────────
+        # V_drop = R * I, where I is the current drawn from the *battery*, not the
+        # motor current. The H-bridge is a buck stage: the motor draws τ / kt
+        # continuously but the battery only sources it during the PWM on-time, so
+        # I_bat = duty * τ / kt (equivalently V_bat I_bat = V_motor I_motor).
+        # The duty cycle is the one from the previous compute(), matching the lag
+        # of prev_actuator_torque. Signed: duty and τ of opposite sign means the
+        # joint is regenerating into the bus. Joints share a bus, so the per-joint
+        # currents are summed *before* clamping at zero — a braking joint offsets
+        # a driving one. The clamp discards regeneration raising the bus voltage,
+        # which is deliberate (see docs/usage/mjlab_gpu.rst).
         vin = self.vin_tensor  # (N, 1)
-        if self.vin_drop_gain is not None and self._prev_motor_torque is not None:
-            load = self._prev_motor_torque.abs().sum(dim=-1, keepdim=True)  # (N, 1)
-            vin = vin - self.vin_drop_gain * load  # (N, 1), broadcast safe
+        duty_cycle = getattr(act, "duty_cycle", None)
+        if self.vin_drop_resistance is not None and duty_cycle is not None:
+            current = (duty_cycle * prev_actuator_torque / bam.kt.value).sum(
+                dim=-1, keepdim=True
+            )  # (N, 1)
+            current = torch.clamp(current, min=0.0)  # only positive draw
+            vin = vin - self.vin_drop_resistance * current  # (N, 1), broadcast safe
             if self.cfg.vin_min is not None:
                 vin = torch.clamp(vin, min=self.cfg.vin_min)
 
@@ -635,7 +719,6 @@ class BamActuator(Actuator):
         # themselves. This mirrors bam.mujoco.MujocoController.
         qfrc_bias = self._as_tensor(self._data.qfrc_bias)  # (N, nv)
         qfrc_constraint = self._as_tensor(self._data.qfrc_constraint)  # (N, nv)
-        qfrc_actuator = self._as_tensor(self._data.qfrc_actuator)  # (N, nv)
         nv = qfrc_bias.shape[-1]
         qfrc_friction = self._dof_friction_force(nv)  # (N, nv)
         external_torque = (
@@ -643,10 +726,6 @@ class BamActuator(Actuator):
             + qfrc_constraint[:, self._dof_ids]
             - qfrc_friction[:, self._dof_ids]
         )  # (N, J)
-        # Actuator torque applied on the PREVIOUS solve. The BAM friction budget
-        # uses this (not the freshly-computed motor_torque) as the motor-side load,
-        # matching bam.mujoco.MujocoController which reads data.qfrc_actuator.
-        prev_actuator_torque = qfrc_actuator[:, self._dof_ids]  # (N, J)
 
         # ── 4. Stribeck coefficient ───────────────────────────────────────────
         # (N, J); zero tensor when model has no stribeck (unused in budget)
@@ -667,10 +746,6 @@ class BamActuator(Actuator):
             prev_actuator_torque, external_torque, stribeck_coeff
         )  # (N, J)
         self._write_frictions(frictionloss, friction_viscous)
-
-        # Store motor torque for next step's voltage-drop computation
-        if self._prev_motor_torque is not None:
-            self._prev_motor_torque = motor_torque.detach()
 
         return motor_torque
 
@@ -720,6 +795,10 @@ class Simulator:
     :param stiff_frictionloss: Forwarded to :class:`BamActuatorCfg`. When ``True``
         (default), the joint-friction constraint is stiffened to counter MuJoCo
         Warp's lack of a noslip solver (see :attr:`BamActuatorCfg.stiff_frictionloss`).
+    :param command_delay: If ``True``, apply the model's ``command_delay`` parameter
+        (the rig transport lag) by shifting the recorded goal-position sequence in
+        time, exactly as the reference simulator does. Defaults to ``False`` so the
+        raw goals are used unless a caller opts in.
     """
 
     def __init__(
@@ -731,10 +810,19 @@ class Simulator:
         device: str | None = None,
         integrator: str = "euler",
         stiff_frictionloss: bool = True,
+        command_delay: bool = False,
     ) -> None:
         self._params_path = _resolve_json_path(json_path, motor_name, model)
         # Default supply voltage from the JSON, used for logs that don't carry vin.
-        self._default_vin = load_model(self._params_path).actuator.vin
+        _m = load_model(self._params_path)
+        self._default_vin = _m.actuator.vin
+        # Command delay [s] read from the params; applied only when opted in.
+        self.command_delay = command_delay
+        _cd = getattr(_m, "command_delay", None)
+        self._command_delay_value = _cd.value if _cd is not None else 0.0
+        # Testbench q_offset [rad]: always applied to the validation pendulum spec
+        # (it matches the reference simulator's gravity evaluation).
+        self._q_offset = _m.q_offset.value
         if device is None:
             device = "cuda" if torch.cuda.is_available() else "cpu"
         self.device = device
@@ -795,7 +883,10 @@ class Simulator:
 
             def _col(key, default=None):
                 return np.array(
-                    [e.get(key, default) if default is not None else e[key] for e in entries]
+                    [
+                        e.get(key, default) if default is not None else e[key]
+                        for e in entries
+                    ]
                 )
 
             gi = _col("goal_position")
@@ -806,6 +897,11 @@ class Simulator:
             torque_en[:length, i], torque_en[length:, i] = ti, ti[-1]
             log_pos[:length, i], log_pos[length:, i] = pi, pi[-1]
             log_speed[:length, i], log_speed[length:, i] = si, si[-1]
+
+        # Optional command delay: shift the goal columns in time (single scalar
+        # delay from the params, shared by all envs), same as the reference sim.
+        if self.command_delay and self._command_delay_value > 0.0:
+            goals = fractional_delay_shift(goals, self._command_delay_value, dt)
 
         # ── Build the scene / sim / actuator ─────────────────────────────────
         scene, sim, entity, bam_act, body_id = self._build(logs[0], n, dt)
@@ -851,7 +947,9 @@ class Simulator:
             if not te.all():
                 off = np.nonzero(~te)[0]
                 off_ids = torch.as_tensor(off, dtype=torch.long, device=dev)
-                zeros = torch.zeros((off_ids.numel(), ctrl_ids.numel()), dtype=f32, device=dev)
+                zeros = torch.zeros(
+                    (off_ids.numel(), ctrl_ids.numel()), dtype=f32, device=dev
+                )
                 entity.write_ctrl_to_sim(zeros, env_ids=off_ids)
 
             controls[k] = sim.data.ctrl[:, ctrl_ids][:, 0].detach().cpu().numpy()
@@ -882,7 +980,9 @@ class Simulator:
             "length": base_log["length"],
         }
         ent_cfg = EntityCfg(
-            spec_fn=lambda: Pendulum(base).build_spec(_JOINT_NAME),
+            spec_fn=lambda: Pendulum(base).build_spec(
+                _JOINT_NAME, q_offset=self._q_offset
+            ),
             articulation=EntityArticulationInfoCfg(actuators=(bam_cfg,)),
             init_state=EntityCfg.InitialStateCfg(
                 joint_pos={_JOINT_NAME: 0.0}, joint_vel={".*": 0.0}
@@ -910,7 +1010,13 @@ class Simulator:
         scene.initialize(sim.mj_model, sim.model, sim.data)
         # BamActuator writes per-env friction; those fields must be per-world.
         sim.expand_model_fields(
-            ("body_mass", "body_ipos", "body_inertia", "dof_frictionloss", "dof_damping")
+            (
+                "body_mass",
+                "body_ipos",
+                "body_inertia",
+                "dof_frictionloss",
+                "dof_damping",
+            )
         )
         entity = scene[_ENTITY_NAME]
         bam_act = entity.actuators[0]

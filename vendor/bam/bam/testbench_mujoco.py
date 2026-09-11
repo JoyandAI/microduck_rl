@@ -58,20 +58,32 @@ class Pendulum:
         total_mass = self.mass + self.arm_mass
         # Center of mass along the (downward) arm: rod contributes at l/2, the
         # tip mass at l.
-        com_z = -(self.mass * self.length + self.arm_mass * self.length / 2.0) / total_mass
+        com_z = (
+            -(self.mass * self.length + self.arm_mass * self.length / 2.0) / total_mass
+        )
         # Inertia about the pivot, shifted to the COM with the parallel axis theorem.
-        inertia_pivot = self.mass * self.length**2 + (self.arm_mass / 3.0) * self.length**2
+        inertia_pivot = (
+            self.mass * self.length**2 + (self.arm_mass / 3.0) * self.length**2
+        )
         inertia_com = inertia_pivot - total_mass * com_z**2
         # A point mass has zero inertia about its own COM, which MuJoCo would
         # reject; floor it. Only rotation about x (the hinge axis) matters.
         inertia_x = max(inertia_com, 1e-9)
         return total_mass, com_z, inertia_x
 
-    def build_spec(self, name: str = "pendulum") -> mujoco.MjSpec:
+    def build_spec(
+        self, name: str = "pendulum", q_offset: float = 0.0
+    ) -> mujoco.MjSpec:
         """Build and return a MuJoCo spec for this pendulum.
 
         :param name: Name given to both the hinge joint and the (motor) actuator.
             This is the name the :class:`~bam.mujoco.MujocoController` is created with.
+        :param q_offset: Testbench calibration offset [rad]. The reference simulator
+            evaluates gravity at ``q + q_offset``; this is encoded as the hinge joint
+            reference so the physical pendulum configuration is ``qpos + q_offset``
+            while the read-out ``qpos`` stays in the measured frame. This is purely a
+            testbench-validation quantity (it has no meaning on a real robot), and it
+            only affects this spec's geometry — not the actuator or control law.
         :returns: A :class:`mujoco.MjSpec` with a single hinge joint and a
             direct-torque (motor) actuator.
         """
@@ -84,6 +96,9 @@ class Pendulum:
         spec.compiler.inertiafromgeom = (
             mujoco.mjtInertiaFromGeom.mjINERTIAFROMGEOM_FALSE
         )
+        # Interpret angles (the joint ``ref`` below) in radians rather than the
+        # MjSpec default of degrees, so q_offset is applied at the correct scale.
+        spec.compiler.degree = False
 
         length = self.length
 
@@ -131,11 +146,16 @@ class Pendulum:
         )
 
         body = spec.worldbody.add_body(name=name, pos=[0.0, 0.0, 0.0])
-        body.add_joint(
+        joint = body.add_joint(
             name=name,
             type=mujoco.mjtJoint.mjJNT_HINGE,
             axis=[1.0, 0.0, 0.0],
         )
+        # Encode the testbench q_offset: MuJoCo applies a rotation of (qpos - ref)
+        # to the body, so ref = -q_offset makes the physical angle qpos + q_offset,
+        # matching the reference simulator's gravity evaluation, while qpos itself
+        # stays in the measured frame for read-out.
+        joint.ref = -q_offset
 
         total_mass, com_z, inertia_x = self.inertial_params()
         body.mass = total_mass
@@ -159,8 +179,12 @@ class Pendulum:
             name="bob",
             type=mujoco.mjtGeom.mjGEOM_CYLINDER,
             fromto=[
-                0.0, 0.0, -length + bob_half,
-                0.0, 0.0, -length - bob_half,
+                0.0,
+                0.0,
+                -length + bob_half,
+                0.0,
+                0.0,
+                -length - bob_half,
             ],
             size=[max(length * 0.13, 2e-3), 0.0, 0.0],
             mass=0.0,

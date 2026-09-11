@@ -9,6 +9,7 @@
     "kd": 32,
     "max_velocity": 19.1637,
     "max_acceleration": 500.0,
+    "max_current": 1.95,
     "model": "m1",
     "actuator": "hls2909"
 }

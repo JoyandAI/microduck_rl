@@ -11,6 +11,7 @@ import mujoco
 import json
 from copy import copy
 from .model import Model, load_model_from_dict
+from .simulate import fractional_delay_shift
 from .testbench_mujoco import Pendulum
 
 
@@ -23,8 +24,12 @@ class MujocoController:
     :param str actuator: Actuator to control. The actuated joint properties will be updated. This can be a list of actuators
     :param mujoco.MjModel mujoco_model: The mujoco model
     :param mujoco.MjData mujoco_data: The mujoco data
-    :param float | None vin_drop_gain: The voltage drop gain, if not None the voltage will be reduced by 
-        vin_drop_gain * load, where load is the sum of the absolute value of the motor torques
+    :param float | None vin_drop_resistance: The battery + wire resistance [Ohm], if not None the
+        voltage will be reduced by vin_drop_resistance * current, where the battery current [A] is
+        estimated from the previous step as max(0, sum(duty_cycle * torque) / kt). The duty cycle
+        factor converts motor current to supply current (the H-bridge acts as a buck stage); the
+        sum is taken over the shared bus before clamping, so a regenerating joint offsets a
+        driving one.
     :param float | None vin_min: the minimum voltage, if not None the voltage will not go below this value
     """
 
@@ -34,18 +39,23 @@ class MujocoController:
         actuator: str,
         mujoco_model: mujoco.MjModel,
         mujoco_data: mujoco.MjData,
-        vin_drop_gain: float | None = None,
+        vin_drop_resistance: float | None = None,
         vin_min: float | None = None,
     ):
         self.model = model
         self.actuator = np.atleast_1d(actuator)
         self.mujoco_model = mujoco_model
         self.mujoco_data = mujoco_data
-        self.vin_drop_gain = vin_drop_gain
+        self.vin_drop_resistance = vin_drop_resistance
         self.vin_min = vin_min
 
         self.dofs = []
         self.q_target = np.zeros(len(self.actuator))
+        # Control signal computed by the last update(), and internal state of the
+        # actuator control law. Both are kept per controller, since several
+        # controllers may share the same Model (see Actuator.stateful and reset())
+        self.control = None
+        self.actuator_state = None
         self.dof_to_q_target = {}
         for i, name in enumerate(self.actuator):
             self.dof_to_q_target[name] = i
@@ -71,7 +81,18 @@ class MujocoController:
         )
         mujoco.mj_setConst(self.mujoco_model, self.mujoco_data)
 
-        self._prev_motor_torque = np.zeros(len(self.actuator))
+    def reset(self) -> None:
+        """Reset the state this controller keeps across updates.
+
+        Call it whenever the simulation state is reset (the actuator's control
+        law can be stateful, see :attr:`bam.actuator.Actuator.stateful`). This is
+        what makes a reset effective here: the state is kept per controller (see
+        :meth:`update`), so resetting the shared :class:`~bam.model.Model` alone
+        would be overwritten by this controller at the next update.
+        """
+        self.actuator_state = None
+        self.control = None
+        self.last_ts = self.mujoco_data.time
 
     def get_q_target(self, name: str) -> float:
         """Return the current target position for a named actuator [rad].
@@ -87,18 +108,6 @@ class MujocoController:
         :param q_target: Desired joint angle [rad].
         """
         self.q_target[self.dof_to_q_target[name]] = q_target
-    
-    def reset(self, qpos):
-        """Reset the controller to a given joint position state.
-
-        Should be called after every ``mujoco.mj_resetData`` to clear the
-        internal target and voltage-drop state.
-
-        :param qpos: Full ``mj_data.qpos`` array. The controller extracts
-            the positions of its controlled joints.
-        """
-        self.q_target = qpos[self.qpos_indexes]
-        self._prev_motor_torque[:] = 0.0
 
     def update(self):
         """
@@ -110,12 +119,24 @@ class MujocoController:
         q = self.mujoco_data.qpos[self.qpos_indexes]
         dq = self.mujoco_data.qvel[self.dof_indexes]
 
-        # Apply voltage drop based on previous step's motor torques
+        # Apply the voltage drop across the battery + wire resistance. The battery
+        # current is estimated from the previous step's actuator torques and duty
+        # cycles: the H-bridge is a buck stage, so the motor draws torque / kt
+        # continuously but the battery only sources it during the PWM on-time,
+        # giving I_bat = duty * torque / kt. The product is signed (duty and torque
+        # of opposite sign = the joint brakes and returns current to the bus), and
+        # the joints share a supply, so the sum is taken before clamping at zero.
         act = self.model.actuator
         vin_orig = act.vin
-        if self.vin_drop_gain is not None:
-            load = np.sum(np.abs(self._prev_motor_torque))
-            vin_eff = vin_orig - self.vin_drop_gain * load
+        duty_cycle = getattr(act, "duty_cycle", None)
+        if self.vin_drop_resistance is not None and duty_cycle is not None:
+            current = np.sum(
+                duty_cycle
+                * self.mujoco_data.qfrc_actuator[self.dof_indexes]
+                / self.model.kt.value
+            )
+            current = max(current, 0.0)  # Only consider positive current draw
+            vin_eff = vin_orig - self.vin_drop_resistance * current
             if self.vin_min is not None:
                 vin_eff = max(vin_eff, self.vin_min)
             act.vin = vin_eff
@@ -124,15 +145,24 @@ class MujocoController:
         # the firmware current limiter is applied here as a duty-cycle constraint)
         dt = self.mujoco_data.time - self.last_ts
         self.last_ts = self.mujoco_data.time
+        # A stateful control law keeps its state on the actuator, which is shared
+        # with any other controller using the same Model: swap in our own state
+        # around the call.
+        if act.stateful:
+            act.set_state(self.actuator_state)
         control = act.compute_control(self.q_target, q, dq, dt)
+        if act.stateful:
+            self.actuator_state = act.get_state()
+        # Kept for inspection: compute_control must not be called a second time
+        # just to know what was applied, as that would advance the state twice.
+        self.control = control
 
         # Computing the applied torque
         torque = act.compute_torque(control, True, q, dq)
 
-        # Restore original vin and store motor torques for next step's drop computation
-        if self.vin_drop_gain is not None:
+        # Restore original vin
+        if self.vin_drop_resistance is not None:
             act.vin = vin_orig
-            self._prev_motor_torque = np.atleast_1d(torque).copy()
 
         # Applying the torque
         self.mujoco_data.ctrl[self.act_indexes] = torque
@@ -172,6 +202,7 @@ class MujocoController:
         self.mujoco_model.dof_frictionloss[self.dof_indexes] = frictionloss
         self.mujoco_model.dof_damping[self.dof_indexes] = damping
 
+
 class Simulator:
     """MuJoCo mirror of :class:`bam.simulate.Simulator`.
 
@@ -188,11 +219,18 @@ class Simulator:
     :param model: BAM friction model to simulate.
     :param actuator: Name used for the hinge joint and the motor actuator in
         the generated spec (and the name the :class:`MujocoController` controls).
+    :param command_delay: If ``True``, apply the model's ``command_delay``
+        parameter (the rig transport lag) by shifting the recorded goal-position
+        sequence in time, exactly as the reference simulator does. Defaults to
+        ``False`` so the raw goals are used unless a caller opts in.
     """
 
-    def __init__(self, model: Model, actuator: str = "pendulum"):
+    def __init__(
+        self, model: Model, actuator: str = "pendulum", command_delay: bool = False
+    ):
         self.model = model
         self.actuator = actuator
+        self.command_delay = command_delay
         # One entry per environment: (mujoco_model, mujoco_data, controller)
         self.instances: list[tuple] = []
         self.t = 0.0
@@ -211,7 +249,9 @@ class Simulator:
                 "length": testbench.length,
             }
         )
-        return pendulum.build_spec(self.actuator)
+        return pendulum.build_spec(
+            self.actuator, q_offset=self.model.q_offset.value
+        )
 
     def reset(self, q: float = 0.0, dq: float = 0.0):
         """(Re)build the environments and reset them to a given state.
@@ -241,7 +281,8 @@ class Simulator:
             mujoco_data.qpos[controller.qpos_indexes] = q[i]
             mujoco_data.qvel[controller.dof_indexes] = dq[i]
             mujoco.mj_forward(mujoco_model, mujoco_data)
-            controller.reset(mujoco_data.qpos)
+            # Seed the target with the initial position so the arm starts at rest
+            controller.q_target = mujoco_data.qpos[controller.qpos_indexes]
             self.instances.append((mujoco_model, mujoco_data, controller))
 
         self.t = 0.0
@@ -265,6 +306,18 @@ class Simulator:
         return self._pack(
             [data.qvel[ctrl.dof_indexes][0] for _, data, ctrl in self.instances]
         )
+
+    @property
+    def control(self):
+        """Control signal applied at the last :meth:`step` (scalar if single env).
+
+        ``None`` before the first step, or if the actuator's control law returns
+        ``None`` (e.g. a torque-controlled actuator).
+        """
+        controls = [ctrl.control for _, _, ctrl in self.instances]
+        if any(control is None for control in controls):
+            return None
+        return self._pack([control[0] for control in controls])
 
     def step(self, goal_position, torque_enable, dt: float):
         """Advance every environment by one timestep.
@@ -326,8 +379,17 @@ class Simulator:
             first_entry["speed"] if "speed" in first_entry else 0.0,
         )
 
+        # Optional command delay: shift the recorded goal sequence in time, same
+        # as the reference simulator (:class:`bam.simulate.Simulator`).
+        cmd_delay = getattr(self.model, "command_delay", None)
+        delayed_goal = None
+        if self.command_delay and cmd_delay is not None and cmd_delay.value > 0.0:
+            dt_scalar = float(np.asarray(dt).reshape(-1)[0])
+            goal = np.stack([e["goal_position"] for e in log["entries"]])
+            delayed_goal = fractional_delay_shift(goal, cmd_delay.value, dt_scalar)
+
         reset_period_t = 0.0
-        for entry in log["entries"]:
+        for k, entry in enumerate(log["entries"]):
             reset_period_t += dt
             if reset_period is not None and reset_period_t > reset_period:
                 reset_period_t = 0.0
@@ -336,13 +398,17 @@ class Simulator:
             positions.append(copy(self.q))
             velocities.append(copy(self.dq))
 
-            # Control recomputed the same way the controller does, for reference.
-            control = self.model.actuator.compute_control(
-                entry["goal_position"], self.q, self.dq, dt
+            goal_k = (
+                delayed_goal[k] if delayed_goal is not None else entry["goal_position"]
             )
-            controls.append(copy(control))
 
-            self.step(entry["goal_position"], entry["torque_enable"], dt)
+            self.step(goal_k, entry["torque_enable"], dt)
+
+            # Control applied by the controller during this step (computed from the
+            # pre-step state). It is read back rather than recomputed here: the
+            # actuator control law can be stateful, and calling it twice per
+            # timestep would advance that state twice.
+            controls.append(copy(self.control))
 
         return positions, velocities, controls
 
@@ -352,7 +418,7 @@ def load_config(
     mujoco_model: mujoco.MjModel,
     mujoco_data: mujoco.MjData,
     kp: float,
-    vin: float
+    vin: float,
 ) -> tuple:
     """
     Loads a BAM configuration file and returns the list of controllers and the mapping dicts.
@@ -375,14 +441,16 @@ def load_config(
             dofs = value["dofs"]
             for dof in dofs:
                 dof_to_bam_controller[dof] = key
-                
+
             model = load_model_from_dict(value["model"])
             model.actuator.kp = kp
             model.actuator.vin = vin
             model.actuator.error_gain = value["error_gain"]
             model.actuator.max_pwm = value["max_pwm"]
 
-            bam_controllers[key] = MujocoController(model, dofs, mujoco_model, mujoco_data)
+            bam_controllers[key] = MujocoController(
+                model, dofs, mujoco_model, mujoco_data
+            )
             bam_controllers[key].dofs = dofs
 
     return bam_controllers, dof_to_bam_controller

@@ -1,5 +1,5 @@
-Using BAM in MuJoCo (CPU)
-=========================
+MuJoCo (CPU)
+============
 
 This page explains how to plug BAM friction models into a standard MuJoCo
 simulation running on CPU. The entry point is :class:`bam.mujoco.MujocoController`.
@@ -13,6 +13,12 @@ MuJoCo dependency:
 .. code-block:: text
 
    pip install better-actuator-models[mujoco]
+
+Or, with `uv <https://docs.astral.sh/uv/>`_:
+
+.. code-block:: text
+
+   uv add "better-actuator-models[mujoco]"
 
 Overview
 --------
@@ -40,11 +46,10 @@ servos:
 
    from bam.model import load_model
 
-   model = load_model(motor_name="xl330", model="m6")
+   model = load_model(motor_name="{actuator}", model="m6")
 
-Supported motor names: ``"xl320"``, ``"xl330"``, ``"mx106"``, ``"mx64"``,
-``"erob80:50"``, ``"erob80:100"``.
-Supported model variants: ``"m1"`` through ``"m6"`` (see :doc:`../theory/models`).
+- Supported motor names: see the :doc:`list of identified actuators <actuators>`.
+- Supported model variants: ``"m1"`` through ``"m6"`` (see :doc:`../theory/models`).
 
 **Custom JSON** — parameters produced by your own identification run:
 
@@ -100,7 +105,6 @@ before every ``mj_step``:
 .. code-block:: python
 
    mujoco.mj_resetData(mj_model, mj_data)
-   controller.reset(mj_data.qpos)
 
    joint_names = ["joint_1", ..., "joint_n"]
    target_angles = [...]
@@ -111,23 +115,24 @@ before every ``mj_step``:
       controller.update()
       mujoco.mj_step(mj_model, mj_data)
 
-:meth:`~bam.mujoco.MujocoController.reset` should be called after every
-``mj_resetData`` to clear the internal velocity and torque state.
-
 Voltage drop (optional)
 -----------------------
 
-Real batteries and cables introduce a voltage drop proportional to the total
-current draw. BAM models this as:
+Real batteries and cables have an internal resistance that causes a voltage
+drop under load. BAM models this as an equivalent resistor placed between the
+battery and the motors:
 
 .. math::
 
-   V_\text{eff} = V_\text{in} - g_\text{drop} \sum_i |\tau_i|
+   V_\text{eff} = V_\text{in} - R_\text{drop} \, I,
+   \qquad
+   I = \max\left(0, \; \frac{1}{K_t} \sum_i d_i \, \tau_i \right)
 
-where :math:`g_\text{drop}` is ``vin_drop_gain`` (approximately
-:math:`R / K_t`) and the sum runs over all controlled joints.
-A hard lower bound ``vin_min`` can be set to prevent the effective voltage
-from collapsing under heavy load:
+where ``vin_drop_resistance`` is :math:`R_\text{drop}` (the combined battery +
+wire resistance, in ohms), :math:`\tau_i` is the actuator torque on joint
+:math:`i`, :math:`d_i` its PWM duty cycle, and :math:`K_t` the torque constant.
+A hard lower bound ``vin_min`` can be set to prevent the effective voltage from
+collapsing under heavy load:
 
 .. code-block:: python
 
@@ -136,39 +141,47 @@ from collapsing under heavy load:
       actuator=["joint_1", ..., "joint_n"],
       mujoco_model=mj_model,
       mujoco_data=mj_data,
-      vin_drop_gain=0.5,   # [V/Nm]
-      vin_min=6.0,         # [V]
+      vin_drop_resistance=0.1,   # 100 mOhms of wire & battery resistance
+      vin_min=6.0,               # [V]
    )
 
-Current limiting
-----------------
-
-Servo firmwares try to cap the motor current to protect the hardware. The firmware
-can only act on the PWM duty cycle, though — it cannot synthesize a voltage the
-battery does not have — so a current limit is really a *duty-cycle constraint*, not
-a hard clamp on the output torque. BAM models it that way in
-:meth:`~bam.actuator.VoltageControlledActuator.compute_control`: from the motor
-relation :math:`I = (\texttt{duty}\cdot V_\text{in} - K_t\dot{q}) / R`, the
-constraint :math:`|I| \le \texttt{max\_current}` maps to the duty window
+Note that :math:`I` is the current drawn from the **battery**, which is not the
+motor current. An H-bridge in PWM behaves like a buck stage: the motor draws
+:math:`\tau_i / K_t` continuously, but the battery only sources it during the
+on-time of the PWM period, so the two are related by the duty cycle,
 
 .. math::
 
-   \frac{K_t\dot{q} - R\,\texttt{max\_current}}{V_\text{in}}
-   \le \texttt{duty} \le
-   \frac{K_t\dot{q} + R\,\texttt{max\_current}}{V_\text{in}}
+   I_\text{bat} = d \, I_\text{motor},
+   \qquad
+   V_\text{bat} I_\text{bat} = V_\text{motor} I_\text{motor}.
 
-The commanded duty is clamped to this window and then to the physical
-``[-max_pwm, max_pwm]`` range, applied **last**. At high speed the back-EMF
-:math:`K_t\dot{q}` can push the window outside the achievable PWM range, in which
-case the limiter saturates and the current is *not* actually held at
-``max_current`` — exactly as the real firmware behaves when the battery cannot
-supply the required voltage.
+Two consequences are worth keeping in mind when fitting
+``vin_drop_resistance``:
 
-``max_current`` is a property of the actuator model (``VoltageControlledActuator``),
-not of the ``MujocoController``. It is set per motor family — for instance the
-``xl330`` uses ``max_current = 1.75`` A — so no controller configuration is
-required. Actuators whose ``max_current`` is ``None`` (default) perform no current
-limiting.
+* **The product is signed.** When :math:`d_i` and :math:`\tau_i` have opposite
+  signs the joint is braking and pushing current *back* into the bus. Since all
+  joints of a controller share one supply, the per-joint currents are summed
+  **before** the clamp, so a regenerating joint offsets a driving one.
+* **Regeneration cannot raise the voltage.** The :math:`\max(0, \cdot)` discards
+  a net negative draw rather than modelling the bus voltage rising above
+  :math:`V_\text{in}`. This is deliberate — most drives dissipate that energy
+  instead of returning it to the pack — but it means the model is conservative
+  during aggressive decelerations.
+
+Both quantities are taken from the previous simulation step (the duty cycle from
+the last :meth:`~bam.mujoco.MujocoController.update` and the torque from the
+last solve), so the drop lags the load by one timestep and no algebraic loop is
+introduced.
+
+.. warning::
+
+   The voltage drop is computed independently by each
+   :class:`~bam.mujoco.MujocoController` from its own joints' current draw.
+   If several controllers share the same physical battery, their currents are
+   **not** summed together, so the modeled drop underestimates the real one.
+   Group all joints powered by the same battery under a single controller if you
+   need the shared-supply behavior.
 
 Multi-actuator config file
 --------------------------

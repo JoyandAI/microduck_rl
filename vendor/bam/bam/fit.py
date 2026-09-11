@@ -7,6 +7,7 @@
 #     http://www.apache.org/licenses/LICENSE-2.0
 
 import argparse
+import os
 import socket
 from datetime import datetime
 import sys
@@ -108,11 +109,31 @@ def objective(trial):
 
 
 last_log = time.time()
+last_params_sync = time.time()
 wandb_run = None
 
 
+def sync_params_to_files():
+    """Copy the current best params into the run's Files tab as params.json.
+
+    Writes params.json into the run directory (same path each time, so the Files
+    tab shows a single file that is updated in place, no version history) and
+    uploads it immediately with ``policy="now"``. ``now`` is used rather than a
+    ``live`` watcher because the file is (re)created after ``wandb.init`` and a
+    live glob registered at init does not reliably pick that up.
+    """
+    if wandb_run is None:
+        return
+    dst = os.path.join(wandb_run.dir, "params.json")
+    with open(params_json_filename) as src:
+        content = src.read()
+    with open(dst, "w") as out:
+        out.write(content)
+    wandb.save(dst, base_path=wandb_run.dir, policy="now")
+
+
 def monitor(study, trial):
-    global last_log, wandb_run
+    global last_log, last_params_sync, wandb_run
     elapsed = time.time() - last_log
 
     if args.wandb and wandb_run is None:
@@ -127,7 +148,6 @@ def monitor(study, trial):
                 "hostname": socket.gethostname(),
             },
         )
-
     if elapsed > 0.2:
         last_log = time.time()
         data = deepcopy(study.best_params)
@@ -174,6 +194,11 @@ def monitor(study, trial):
 
         if wandb_run is not None:
             wandb.log(wandb_log)
+
+            # Refresh the Files-tab params.json at most ~once a minute.
+            if time.time() - last_params_sync > 60:
+                last_params_sync = time.time()
+                sync_params_to_files()
     sys.stdout.flush()
 
 
@@ -219,3 +244,8 @@ else:
         p.start()
 
     optuna_run(True)
+
+    # Final flush: make sure the last best params reach the Files tab.
+    if args.wandb and wandb_run is not None:
+        sync_params_to_files()
+        wandb.finish()

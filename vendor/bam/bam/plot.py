@@ -69,12 +69,14 @@ for log in logs.logs:
             model = load_model(model_name)
             all_names.append(model.name)
             if args.sim_mujoco:
-                simulator = mujoco_backend.Simulator(model)
+                simulator = mujoco_backend.Simulator(model, command_delay=True)
                 sim_q, sim_speed, sim_controls = simulator.rollout_log(
                     log, reset_period=args.reset_period
                 )
             elif args.sim_mjlab:
-                simulator = mjlab_backend.Simulator(json_path=model_name)
+                simulator = mjlab_backend.Simulator(
+                    json_path=model_name, command_delay=True
+                )
                 sim_q, sim_speed, sim_controls = simulator.rollout_log(
                     log, reset_period=args.reset_period
                 )
@@ -92,6 +94,17 @@ for log in logs.logs:
     goal_q = [entry["goal_position"] for entry in log["entries"]]
     speed = [entry["speed"] if "speed" in entry else 0.0 for entry in log["entries"]]
     has_speed = any("speed" in entry for entry in log["entries"])
+
+    # MAE of each simulated model against the recorded data. The params file is
+    # shown, since several of them can share the same model.
+    if do_sim:
+        for params_file, name, sim_q, sim_speeds in zip(
+            model_names, all_names, all_sim_q, all_sim_speeds
+        ):
+            mae = f"q {np.mean(np.abs(sim_q - np.array(q))):.6f} rad"
+            if has_speed:
+                mae += f", speed {np.mean(np.abs(sim_speeds - np.array(speed))):.6f} rad/s"
+            print(f"  {params_file} ({name}) MAE: {mae}")
 
     dummy = DummyModel()
     dummy.set_actuator(actuators[args.actuator]())
@@ -111,10 +124,10 @@ for log in logs.logs:
         for model_name, sim_q in zip(all_names, all_sim_q):
             ax1.plot(ts, sim_q, label=f"{model_name}_q")
     ax1.legend()
-    title = f'{log["motor"]}, {log["trajectory"]}, m={log["mass"]}, l={log["length"]}, k={log["kp"]}'
+    title = f"{log['motor']}, {log['trajectory']}, m={log['mass']}, l={log['length']}, k={log['kp']}"
 
     ax1.set_title(
-        f'{log["motor"]}, {log["trajectory"]}, m={log["mass"]}, l={log["length"]}, k={log["kp"]}'
+        f"{log['motor']}, {log['trajectory']}, m={log['mass']}, l={log['length']}, k={log['kp']}"
     )
     ax1.set_ylabel("angle [rad]")
     ax1.grid()

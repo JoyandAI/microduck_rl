@@ -104,6 +104,33 @@ class UpAndDown(Trajectory):
         ]
         return cubic_interpolate(keyframes, t), True
 
+class HalfSine(Trajectory):
+    """Slow half-sine path 0 → π/2.
+    """
+
+    duration = 6.0
+
+    def __call__(self, t: float) -> tuple[float, bool]:
+        return np.sin(t/2) * np.pi/2, True
+    
+class Steps(Trajectory):
+    """Steps
+    """
+
+    duration = 6.0
+
+    def __call__(self, t: float) -> tuple[float, bool]:
+        stages = [
+            [0, 0],
+            [1, 0.75],
+            [2.5, 1.55],
+            [4, 0.75],
+            [5, 0],
+            [6, 0]
+        ]
+        for i in range(len(stages) - 1):
+            if stages[i][0] <= t <= stages[i + 1][0]:
+                return stages[i][1], True
 
 class SinSin(Trajectory):
     """Multi-frequency trajectory: :math:`\\sin(t)\\cdot\\pi/2 + \\sin(5t)\\cdot 0.5\\cdot\\sin(2t)`.
@@ -137,6 +164,8 @@ trajectories: dict[str, Trajectory] = {
     "sin_time_square": SinusTimeSquare(),
     "up_and_down": UpAndDown(),
     "sin_sin": SinSin(),
+    "half_sine": HalfSine(),
+    "steps": Steps(),
     "nothing": Nothing(),
 }
 

@@ -11,6 +11,8 @@ extensions = [
     "sphinx.ext.mathjax",
     "sphinx.ext.todo",
     "sphinx_copybutton",
+    "sphinxcontrib.video",
+    "sphinx_design",
 ]
 
 templates_path = ["_templates"]
@@ -43,7 +45,9 @@ pygments_style = "friendly"
 pygments_dark_style = "monokai"
 html_static_path = ["_static"]
 html_css_files = ["bam.css"]
+html_js_files = ["motor_examples.js"]
 html_logo = "_static/BAM_logo.png"
+html_favicon = "_static/favicon.ico"
 
 html_theme_options = {
     "show_nav_level": 2,
