@@ -1,0 +1,23 @@
+{
+ "kt": 0.692,
+ "R": 3.75,
+ "armature": 0.0022430991250649295,
+ "q_offset": 0.008087982067129268,
+ "friction_base": 0.013550748385667027,
+ "friction_stribeck": 0.0002866299268239173,
+ "dtheta_stribeck": 0.7895661117013417,
+ "alpha": 3.4645614981376727,
+ "friction_viscous": 0.008066421435690372,
+ "load_friction_motor": 0.01638114235528301,
+ "load_friction_external": 0.03720174903632928,
+ "load_friction_motor_stribeck": 0.6970603042932693,
+ "load_friction_external_stribeck": 0.07372371093037879,
+ "error_gain": 0.163,
+ "kd": 0.346,
+ "max_velocity": 8.0282,
+ "max_acceleration": 500.0,
+ "max_current": 3.25,
+ "command_delay": 0.025339691826625724,
+ "model": "m5",
+ "actuator": "hd1910"
+}

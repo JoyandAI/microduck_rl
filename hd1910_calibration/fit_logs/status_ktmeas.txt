@@ -1,0 +1,6 @@
+m1 ktmeas exit=0
+m4 ktmeas exit=0
+m3 exit=0
+m2 exit=0
+m5 exit=0
+m6 exit=0

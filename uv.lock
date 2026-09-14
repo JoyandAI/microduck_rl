@@ -102,12 +102,35 @@ wheels = [
 
 [[package]]
 name = "better-actuator-models"
-version = "1.0.1"
-source = { git = "https://github.com/Rhoban/bam.git?branch=mjlab_frictionloss#62bd8ce12154340be97e06f7f41a0ca8f116d967" }
+version = "1.0.2"
+source = { editable = "vendor/bam" }
 dependencies = [
     { name = "colorama" },
     { name = "numpy" },
 ]
+
+[package.metadata]
+requires-dist = [
+    { name = "better-actuator-models", extras = ["mujoco", "mjlab", "identification"], marker = "extra == 'all'" },
+    { name = "cmaes", marker = "extra == 'identification'" },
+    { name = "colorama" },
+    { name = "dynamixel-sdk", marker = "extra == 'identification'" },
+    { name = "matplotlib", marker = "extra == 'identification'" },
+    { name = "mjlab", marker = "extra == 'mjlab'", specifier = ">=1.3,<1.4" },
+    { name = "mujoco", marker = "extra == 'mjlab'", specifier = ">=3.7,<3.8" },
+    { name = "mujoco", marker = "extra == 'mujoco'" },
+    { name = "mujoco-warp", marker = "extra == 'mjlab'", specifier = ">=3.7,<3.8" },
+    { name = "numpy" },
+    { name = "optuna", marker = "extra == 'identification'" },
+    { name = "protobuf", marker = "extra == 'identification'", specifier = ">=3.20,<4.0" },
+    { name = "pyqt5", marker = "extra == 'identification'" },
+    { name = "rustypot", marker = "extra == 'identification'", specifier = ">=1.5.0" },
+    { name = "scipy", marker = "extra == 'mjlab'" },
+    { name = "wandb", marker = "extra == 'identification'" },
+    { name = "warp-lang", marker = "extra == 'mjlab'", specifier = ">=1.12,<1.13" },
+    { name = "zmq", marker = "extra == 'identification'" },
+]
+provides-extras = ["mujoco", "mjlab", "identification", "all"]
 
 [[package]]
 name = "certifi"
@@ -834,7 +857,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "better-actuator-models", git = "https://github.com/Rhoban/bam.git?branch=mjlab_frictionloss" },
+    { name = "better-actuator-models", editable = "vendor/bam" },
     { name = "huggingface-hub", specifier = ">=0.27.0" },
     { name = "matplotlib", specifier = ">=3.10.9" },
     { name = "mjlab", specifier = "==1.3.0" },

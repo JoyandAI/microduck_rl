@@ -1,0 +1,16 @@
+**/__pycache__
+trash/
+data/
+**.pyc
+**.swp
+params.json
+build/
+dist/
+bam.egg-info/
+better_actuator_models.egg-info/
+docs/_build/
+docs/autoapi/
+data_raw/
+data_processed/
+uv.lock
+notes.md

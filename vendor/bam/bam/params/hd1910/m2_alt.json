@@ -1,0 +1,19 @@
+{
+    "armature": 0.0022502199649845275,
+    "q_offset": -0.004599602981957954,
+    "command_delay": 0.0005885766342932239,
+    "friction_base": 0.017119701665761444,
+    "friction_stribeck": 4.7549149367369396e-18,
+    "dtheta_stribeck": 0.3037948285595761,
+    "alpha": 4.552759316652457,
+    "friction_viscous": 0.007459950535101146,
+    "kt": 0.7358,
+    "R": 3.75,
+    "error_gain": 0.163,
+    "kd": 0.346,
+    "max_velocity": 8.03,
+    "max_acceleration": 500.0,
+    "max_current": 3.25,
+    "model": "m2",
+    "actuator": "hd1910"
+}

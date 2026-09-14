@@ -268,6 +268,39 @@ def make_microduck_sitstand_env_cfg(
         params={"command_name": "head_pose", "std": 0.5},
     )
 
+    # Head DC-droop penalty (velocity/standup's fix, adapted for sitstand).
+    # L1 on a 1s EMA of the head tracking error — prices only the SUSTAINED
+    # gravity sag the policy can cancel by biasing the neck command up; transient
+    # motion averages out. head_pose_tracking (Gaussian, std=0.5) alone lets the
+    # 37%-mass head sag ~10° for ~0.03 reward, so without this the policy just
+    # lets the head droop, which reads as "can stand but won't lift the head".
+    #
+    # Weights are scaled by the CURRENT head mass ratio from the HD-1910 servo
+    # swap (docs/feetech_hd1910_servo_notes.md: XL330 18g -> HD-1910 21g = +3g,
+    # 14 servos = +42g, robot 737g -> 779g). Head assembly went 279.9g -> 288.9g
+    # (+3.2%), so the gravity droop load grows x1.032; standup's final
+    # 1.5 * 1.032 = 1.55. Use the MASS ratio, not the body-share (share rose to
+    # 37.1% only because the whole robot got heavier; droop scales with absolute
+    # head mass).
+    #
+    # Upright gate (same values as standup): the gate zeroes the error feeding
+    # the EMA below gate_height_low, so the seated/rising phase (SIT_Z≈0.060,
+    # head may touch the ground) accumulates NOTHING — no tax on the transition
+    # head-pivot; only the standing rest (z>0.11) is priced. Starts at 0 and is
+    # introduced by curriculum below (discovery-vs-refinement timing).
+    cfg.rewards["head_pose_bias"] = RewardTermCfg(
+        func=microduck_mdp.head_pose_bias_penalty,
+        weight=0.0,  # ramped by head_pose_bias_weight curriculum below
+        params={
+            "command_name":       "head_pose",
+            "tau_s":              1.0,
+            "gate_height_low":    0.09,
+            "gate_height_high":   0.11,
+            "gate_tilt_full_deg": 20.0,
+            "gate_tilt_zero_deg": 45.0,
+        },
+    )
+
     # L1 bootstrap — constant gradient toward the commanded pose.
     cfg.rewards["posture_pose_l1"] = RewardTermCfg(
         func=microduck_mdp.posture_pose_l1,
@@ -880,6 +913,22 @@ def make_microduck_sitstand_env_cfg(
                 {"step": 0,          "weight": 0.0},
                 {"step": 750 * 24,   "weight": -5e-4},
                 {"step": 1250 * 24,  "weight": -1e-3},
+            ],
+        },
+    )
+
+    # head_pose_bias weight — same discovery-vs-refinement timing as standup
+    # (3k-4k), and scaled by the HD-1910 head-mass ratio (see the reward above):
+    # standup 0.5/1.5 * 1.032 = 0.52/1.55. If the standing head is STILL down
+    # after a run, raise the last stage — do NOT move the introduction earlier.
+    cfg.curriculum["head_pose_bias_weight"] = CurriculumTermCfg(
+        func=microduck_mdp.reward_weight,
+        params={
+            "reward_name":   "head_pose_bias",
+            "weight_stages": [
+                {"step": 0,          "weight": 0.0},
+                {"step": 3000 * 24,  "weight": 0.52},
+                {"step": 4000 * 24,  "weight": 1.55},
             ],
         },
     )

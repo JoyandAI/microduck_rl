@@ -1,0 +1,6 @@
+m1(72) exit=0
+m3(72) exit=0
+m2(72) exit=0
+m4(72) exit=0
+m5(72) exit=0
+m6(72) exit=0

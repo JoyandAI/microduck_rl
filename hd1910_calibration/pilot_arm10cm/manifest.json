@@ -1,0 +1,41 @@
+{
+  "id": 1,
+  "q_zero_lsb": 1723.0,
+  "sign": 1.0,
+  "motor": "hd1910",
+  "kp": 10272,
+  "reg31_offset_lsb": 0,
+  "geometry": {
+    "arm_mass": 0.0085,
+    "arm_length": 0.1,
+    "hub_mass": 0.0021,
+    "hub_radius": 0.005
+  },
+  "limit_A": 0.975,
+  "hard_limit_deg": 86.0,
+  "amp_max_deg": 80.0,
+  "traj_scale": {
+    "up_and_down": 0.8888888888888888
+  },
+  "traj_peak_deg": {
+    "up_and_down": 80.0
+  },
+  "current_abort_A": 0.0,
+  "jam_err_rad": 0.8,
+  "tip_cases": {
+    "0.1024": {
+      "M_kgm2": 0.0010523858333333334,
+      "B_max_Nm": 0.10472665500000003,
+      "L_eq_m": 0.09857953569700091,
+      "m_eq_kg": 0.1082932672031725
+    }
+  },
+  "records": [
+    {
+      "file": "up_and_down_tip0.1024kg_rep0.json",
+      "trajectory": "up_and_down",
+      "tip_mass_kg": 0.1024,
+      "rep": 0
+    }
+  ]
+}

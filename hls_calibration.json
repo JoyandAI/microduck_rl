@@ -1,0 +1,9 @@
+{
+  "servo_id": 10,
+  "kp_actual": 32,
+  "kd_actual": 32,
+  "ki_actual": 0,
+  "error_gain": 0.002343380742900152,
+  "slope_duty_per_rad": 0.009373522971600608,
+  "note": "error_gain = slope*8/32 (Kp=32, 1/8 scaling per FT-HLS memtable)"
+}

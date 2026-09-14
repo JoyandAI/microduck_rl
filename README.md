@@ -4,7 +4,7 @@
 
 
 RL training environments for [Microduck](https://github.com/pollen-robotics/microduck) —
-a ~800 g, ~25 cm tall bipedal robot — built on
+a ~874 g, ~25 cm tall bipedal robot — built on
 [mjlab](https://github.com/mujocolab/mjlab) (MuJoCo Warp) with PPO.
 Policies are trained here at 50 Hz, exported to ONNX, and deployed on the real
 robot by the runtime in [pollen-robotics/microduck](https://github.com/pollen-robotics/microduck).
@@ -117,7 +117,7 @@ friction), with per-env domain randomization on battery voltage, voltage sag
 under load, command delay, and friction magnitude
 (`FrictionDRBamActuator` in `src/mjlab_microduck/actuator/`).
 
-At this scale — tiny servos driving a ~800 g biped — actuator fidelity is most
+At this scale — tiny servos driving a ~874 g biped — actuator fidelity is most
 of the sim2real gap, which is why the actuator is modeled down to its voltage
 control law instead of an ideal PD.
 

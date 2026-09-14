@@ -1208,11 +1208,25 @@ def main():
                              f"Training samples per-env in {BAM_VIN_DROP_GAIN_RANGE}. 0 disables.")
     parser.add_argument("--kp-fw", type=float, default=BAM_KP_FW,
                         help="BAM firmware P-gain (training uses %(default)s).")
+    parser.add_argument("--push-max", type=float, default=1.0,
+                        help="Random push magnitude [m/s] for the P key. Default 1.0 matches "
+                             "the FINAL velstand curriculum cap; a velocity-only policy was "
+                             "trained against +-0.3, so use --push-max 0.3 to test walking "
+                             "disturbance rejection (velstand-style recovery needs the "
+                             "VelStand policy).",)
+    parser.add_argument("--motor", default="hd1910",
+                        choices=["hd1910", "hd1909", "hls2909", "xl330"],
+                        help="Motor model for the force-limit kt (default hd1910 = the servo the "
+                             "robot actually runs now; hd1909 is the same servo under the lab "
+                             "shorthand; xl330/hls2909 kept for replaying old policies)")
+    parser.add_argument("--model", default=None,
+                        help="BAM model tier for the kt lookup (default: hd1910->m5, hls2909->m1, else m6)")
     parser.add_argument("--current-limit", type=float, default=0.0,
-                        help="XL330 firmware current limit [A]. With BAM this is the duty-cycle "
+                        help="Firmware current limit [A]. With BAM this is the duty-cycle "
                              "limiter of the voltage model (as bam models it); with --no-bam the "
                              "actuator force is clipped to +/- current_limit * kt. Training runs "
-                             "WITHOUT a current limit, so the default is off (<=0).")
+                             "WITHOUT a current limit, so the default is off (<=0). "
+                             "hd1910/hls2909 replay: pass --no-bam and a matching --motor.")
     parser.add_argument("--foot-friction", type=float, default=None,
                         help="Override the foot sliding friction (mu) to emulate the real grippy "
                              "PU sole. Training used mu~1.0 (range 0.7-1.3); real PU is likely "
@@ -1292,7 +1306,8 @@ def main():
     # controller instead (see load_bam_model). kt comes from the bam package.
     if args.no_bam and args.current_limit and args.current_limit > 0:
         from bam.model import load_model
-        kt = load_model(motor_name="xl330", model="m6").kt.value
+        _model = args.model or {"hd1910": "m5", "hd1909": "m5", "hls2909": "m1"}.get(args.motor, "m6")
+        kt = load_model(motor_name=args.motor, model=_model).kt.value
         torque_limit = kt * args.current_limit
         model.actuator_forcerange[:, 0] = -torque_limit
         model.actuator_forcerange[:, 1] = torque_limit
@@ -1467,7 +1482,7 @@ def main():
     # the trunk's world-frame linear velocity directly (qvel[0..3]).
     _freejoint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "trunk_base_freejoint")
     _trunk_qvel_adr = int(model.jnt_dofadr[_freejoint_id])
-    PUSH_MAX = 1.0   # matches the final velstand push_magnitude curriculum cap
+    PUSH_MAX = args.push_max
 
     def random_push():
         """Set the trunk's world-frame xy velocity to a random vector of
