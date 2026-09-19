@@ -1,4 +1,137 @@
-"""Microduck VelStand environment: walking + fall recovery, one policy.
+"""Microduck VelStand environment: walking + protective fall + recovery, one policy.
+
+PROTECTIVE-FALL REBUILD (2026-09, branch protective_fall). Motivation: the real
+robots keep breaking XL330 gearboxes. The daemon's fall-detect limp (kp→50)
+helped but is imperfect, and the limp→standup hand-off produces "convulsions".
+Goal: ONE policy that walks, falls in a way that protects the servos, and gets
+up gently — so the daemon limp can eventually be switched off.
+
+What changed vs the 2026-07 design (kept below, still valid):
+  - WARM START from the deployed walk (wandb 441tzs6d @ model_3750 — the exact
+    checkpoint behind alpha_walking.onnx). Same 61D obs / 512-256-128 actor /
+    76D critic, so `--agent.resume True --wandb-run-path ... --wandb-checkpoint-name
+    model_3750.pt` loads everything. Consequence: the walk exists at iter 0, so
+    every velocity-recipe curriculum (action_rate ramp, standing-env fraction,
+    head/body command ranges, CoM DR, head_pose_bias weight) is COLLAPSED to
+    its final stage (WARM_START) — re-running them from stage 0 would re-teach
+    the walk under easier conditions and drift it. Only velstand's own phases
+    ramp, and they are ~2× shorter than the from-scratch schedule.
+    LAUNCH:  MICRODUCK_WARM_START=1 uv run train Mjlab-VelStand-Flat-MicroDuck \
+               --env.scene.num-envs 4096 --agent.resume True \
+               --wandb-run-path pollen-robotics/mjlab_microduck/441tzs6d \
+               --wandb-checkpoint-name model_3750.pt
+    The env var matters: mjlab's runner restores common_step_counter (90 000)
+    and the iteration (3750) from the checkpoint, which would jump every
+    step-based curriculum below to its final stage in iteration 1 (seen in the
+    first smoke test). MICRODUCK_WARM_START=1 (tasks/mdp.py Patch 5) restarts
+    both at 0 after loading weights / normalizers / optimizer, so the
+    curricula below are relative to THIS run's start. Do NOT warm-start from the stand
+    expert (69u48n8l): its obs normalizer has twist std 0.005 — walking
+    commands through it are a 40σ input.
+  - ROBOT = robot_allcollisions.xml (true full-collision export; identical
+    bodies/masses/ranges to groundcontact, 70 collision geoms vs 11), with the
+    15 XL330 housing geoms NAMED (name_servo_collision_geoms) so a contact
+    sensor can tell "a servo hit the floor" from "the shell hit the floor".
+  - SERVO-PROTECTION COSTS, all mjlab-style (>= 0, negative weight), all ≈ 0
+    during clean walking so they price only falls and bad recoveries:
+      servo_impact    — housing contact force above 2 N (the event that strips
+                        gears: a servo case taking the landing)
+      head_impact     — head-subtree floor force above 15 N (≈2× body weight:
+                        pushing off the head to get up is quasi-static ~7 N and
+                        stays FREE — the 2026-07 lesson that an ungated head
+                        penalty taxed the recovery strategy; a face-plant is a
+                        60 N spike, measured)
+      trunk_impact    — trunk shell floor force above 20 N (same logic)
+      servo_acc_spike — servo joint |accel| above 300 rad/s² (impact
+                        back-driving loads the gear train through the reflected
+                        rotor inertia; CPU falls peak 450–550 regardless of
+                        limp strategy — the policy's lever is HOW it lands)
+      servo_stall     — servos pushing > 0.4 N·m at < 0.5 rad/s (a limb pinned
+                        under the body while the servo fights it: the
+                        convulsion / gear-strip / overheat case)
+      gentle_rise     — trunk |a_z| (self-negating, POSITIVE weight)
+    Ramped 25% → 100% after the recovery economics kick in, so the recovery
+    discovery window is not taxed by its own failed attempts.
+  - TOPPLE PUSHES: a second push event (topple_push) with velocity kicks far
+    beyond the walking DR (ramped ±0.6 → ±1.2 m/s; a 1 m/s Δv topples this
+    robot ~100% of the time in the CPU baseline), so falls are frequent
+    on-policy data rather than rare accidents.
+  - Backlash twin: robot_allcollisions_backlash.xml (add_backlash.py, 2° total)
+    → Mjlab-VelStand-*-Backlash-MicroDuck mirror the base model as required.
+  - NOT modelled on purpose (user decision 2026-09-09): the daemon limp. If the
+    policy finds a gentler strategy with full authority, better let it.
+
+Run-1 lesson (wandb 4otqmkb4, killed @1098, headless eval of ckpt 750):
+  The walk transferred (iter 100 = source-run tracking/upright) and the topple
+  ramp produced falls, but 0 recoveries ever: 73% of eval env-steps fallen,
+  fallen action rate 1/5 of upright, torque 1/3 → the policy learned to LIE
+  STILL. Two causes, both fixed here:
+  (1) ATTEMPT TAX. The warm-start collapse pinned action_rate_l2 at -1.0 from
+      step 0 (-1.5..-2/step, the largest cost in the stack). With a flat -0.5
+      fallen tax, thrashing costs more than waiting → "do nothing" wins (the
+      AGENTS.md smoothness-after-discovery rule, hit from the other side).
+      Fix: action_rate / torque_rate are ×FALLEN_SMOOTHNESS_SCALE (0.1) while
+      tilt > 40° (action_rate_l2_fallen_scaled) — the walk keeps its full tax.
+  (2) SPAWN HOLE. 79% of falls end ON THE SIDE, 20% face-up, 0% face-down; the
+      prone init only knew face-down/face-up. Fix: side_prob in the prone slice.
+  Also: recovery ramps pulled earlier (walk needs no bootstrap window) and the
+  crouch slice enlarged.
+
+Run-2 lesson (wandb 1bqctpkq, killed @1085, per-spawn battery of ckpt 1000):
+  standing 98% / crouch→stand 97% / face-down, face-up, side 0% — still lies
+  still (fallen |Δa| a quarter of upright). Relieving the attempt tax was not
+  enough: the warm-started walk has action std ≈ 0.2, random flailing from
+  lying never yields a partial rise, so the potential-based terms never pay →
+  no gradient at all (the from-scratch velstand runs discovered recovery with
+  std 1.0 flailing, at the cost of the walk). The deployed stand expert
+  (69u48n8l@9750) run through the same battery: 100/100/95% (side never
+  trained!) within ~1 s. Fix: PpoWithExpertBc — fallen-gated behavior cloning
+  toward that frozen expert after each PPO update (distill.py). RL keeps
+  shaping the fall itself and the last mile.
+
+Run-3 lesson (wandb 4lflk7ii, @1060): IT STANDS UP from front and back — and
+  the walk died at the first BC pass (iteration 8: 20 Adam steps at 1e-3 on a
+  few hundred fallen frames; fall terminations 2 → 72 by iteration 12, then a
+  falls→fallen-frames→more-BC loop; yaw tracking error 0.9 → 3.4 rad/s).
+  Nothing constrained the shared weights on upright frames. Fix (distill.py):
+  the warm-start WALK checkpoint is a second frozen teacher anchoring frames
+  with tilt < 25°; stand expert on tilt > 35°; PPO alone in between and for
+  everything the reward adds on top. BC lr 3e-4, min mini-batch 512. 40-iter
+  check at 64 envs with 50% prone spawns + 1 m/s pushes: fallen frac 0.44 →
+  0.33 while upright lin-vel error stayed 0.22 m/s (run 3's recipe destroyed
+  the walk in 12 iterations under milder conditions). Impact costs were confirmed real but weak (face-plant
+  spikes 129 N at 0.5% of steps ≈ -0.3 per fall vs ~7/step walking) — to be
+  raised ×5 once recoveries exist, not before.
+
+Run-4 (wandb 6op8a8u8) WORKS, on the robot too → published reference. Sim
+  benchmark vs the deployed walk→limp→stand pipeline (3 seeds): recovers 88-95%
+  vs 83-86% of push falls, 2.7 s vs 3.3 s median, zero servo-housing contact vs
+  50 ms/fall, trunk impact 0 vs 14 N, stall halved; forward speed equal to the
+  walk expert; head impact EQUAL (~32 N) — the open target. Turn-in-place yaw
+  rate drifted 0.34 → 0.12 rad/s over training (parked, not critical).
+  Robot feedback: (a) convulsions rising from the BACK after a real fall — in sim
+  face-up LANDINGS after a push recover 58-77% vs 100% from a face-up SPAWN; the
+  stand expert has the same hole (71%): a real fall leaves the legs anywhere,
+  HOME-pose spawns never show that. (b) occasional backward overshoot after a
+  front stand-up — NOT reproduced in sim (0/192 re-falls).
+
+Runs 5-6 (axr82ws4, padquu42; resumed from 5999) — ROLLED BACK 2026-09-13:
+  tried post-fall-like prone spawns (randomize_servo_joints_uniform, kept in
+  mdp.py, OFF here), servo_stall ×3, then fallen smoothness 0.4 / gentle_rise ×4
+  / BC coef 0.3. Lessons: servo_stall ×3 made the rise BALLISTIC ("high torque at
+  low velocity" IS a slow careful push-up) — robot overshoot + fall back; the
+  stand expert is only 83% on randomized-joint face-up spawns and the student
+  plateaued there (teacher ceiling); run 6 gave a mild push-recovery gain but
+  face-up stayed at 85% and front stand-ups re-fell 9/190 (5999: 0/192), cause
+  unknown. Not better than 5999 on the robot → back to this recipe.
+
+Rough+backlash run 1 (wy8gcaus) — CATASTROPHIC, root cause FIXED in mdp.py:
+  every fallen-spawn function wrote an ABSOLUTE trunk z (0.05-0.09 m); rough env
+  origins span 0-0.21 m (slope pyramids) → robots spawned inside the terrain
+  from iter 700 (prone spawns on) → value loss 0.6 → 42, entropy 5 → 33. Spawn z
+  is now origin-relative (_env_origin_z). The flat run with the same constants
+  was stable throughout. Prod recipe = THIS file on
+  Mjlab-VelStand-Rough-Backlash-MicroDuck, warm start from 6op8a8u8@5999.
 
 REBASED (2026-07, audit follow-up) on the velocity recipe — the proven
 walker — instead of the abandoned older recipe the old velstand used.
@@ -85,16 +218,35 @@ from mjlab.rl import (
     RslRlModelCfg,
 )
 
-from mjlab_microduck.robot.microduck_constants import MICRODUCK_STANDUP_ROBOT_CFG
+from mjlab.envs.mdp import push_by_setting_velocity
+from mjlab.sensor import ContactMatch, ContactSensorCfg
+
+from mjlab_microduck.robot.microduck_constants import (
+    MICRODUCK_ALLCOLLISIONS_ROBOT_CFG,
+    SERVO_GEOM_SUFFIX,
+)
 from mjlab_microduck.tasks import mdp as microduck_mdp
 from mjlab_microduck.tasks.microduck_velocity_env_cfg import (
+    HEAD_BODY_NAMES,
     make_microduck_velocity_env_cfg,
 )
+from mjlab_microduck.tasks.distill import PpoWithExpertBcCfg, default_bc_cfg
 from mjlab_microduck.tasks.symmetry import PpoWithSymmetryCfg
 
-# Phase boundaries (PPO iterations; env step counter scales by num_steps_per_env=24)
-FELL_OVER_DISABLE_ITER = 500
 NUM_STEPS_PER_ENV = 24
+
+# Warm start from the deployed walk (see module docstring). Collapses every
+# velocity-recipe curriculum to its final stage so the loaded walk is trained
+# under the conditions it was trained under. Set False to train from scratch
+# with the original from-scratch schedule (phase constants below scale up).
+WARM_START = True
+WARM_START_RUN = "pollen-robotics/mjlab_microduck/441tzs6d"   # alpha_walking.onnx
+WARM_START_CHECKPOINT = "model_3750.pt"
+
+# Phase boundaries (PPO iterations; env step counter scales by num_steps_per_env=24).
+# Warm start: the walk exists at iter 0, so fell_over only needs a short
+# adaptation window to the all-collisions model before falls become data.
+FELL_OVER_DISABLE_ITER = 100 if WARM_START else 500
 
 # Fallen gates. LESSON (first rebase training run): the recovery REWARDS must
 # gate on TILT ONLY. Gating them on low height too made SITTING (z≈0.07, trunk
@@ -132,7 +284,46 @@ RECOVERED_UP_Z = 0.09
 # about the walk; it bought a TAX-FREE window (fell_over off at 500 → econ on
 # at 1200) where natural-fall get-up attempts cost nothing and the dense
 # progress terms alone could teach them. Run-7 restores it.
-RECOVERY_ECON_KICKIN_ITER = 1200
+RECOVERY_ECON_KICKIN_ITER = 600 if WARM_START else 1200
+
+# Run-2 fix (1bqctpkq, 0 recoveries @1085 even with the attempt tax relieved):
+# distill the deployed stand expert into the fallen frames (see distill.py).
+# The expert recovers 100% face-down/up and 95% side on this model in ~1 s.
+ENABLE_EXPERT_BC = True
+EXPERT_BC_COEF = 1.0
+EXPERT_BC_GATE_TILT_DEG = 35.0
+
+# Run-1 fix (1): smoothness taxes scaled down while fallen so get-up attempts
+# are affordable; full weight while upright (the walk's smoothness is untouched).
+FALLEN_SMOOTHNESS_SCALE = 0.1
+
+# Servo-protection costs ramp (see docstring). 25% from step 0 keeps the
+# gradient alive; full weight after the recovery economics are in place.
+PROTECT_FULL_ITER = RECOVERY_ECON_KICKIN_ITER + 400
+PROTECT_STAGE0_FRAC = 0.25
+SERVO_IMPACT_WEIGHT = -0.02     # per N above 2 N on servo housings, per step
+HEAD_IMPACT_WEIGHT = -0.01      # per N above 15 N on the head subtree
+TRUNK_IMPACT_WEIGHT = -0.01     # per N above 20 N on the trunk shell
+SERVO_ACC_SPIKE_WEIGHT = -1e-3  # per rad/s² above 300 (summed over servos)
+SERVO_STALL_WEIGHT = -0.05      # per stalled servo per step
+GENTLE_RISE_WEIGHT = 0.005      # POSITIVE: trunk_vertical_accel_penalty is self-negating
+SERVO_IMPACT_THRESH_N = 2.0
+HEAD_IMPACT_THRESH_N = 15.0
+TRUNK_IMPACT_THRESH_N = 20.0
+SERVO_ACC_THRESH = 300.0
+SERVO_STALL_TORQUE = 0.4
+SERVO_STALL_VEL = 0.5
+
+# Topple pushes: velocity kicks big enough to knock the robot over, so falling
+# (and therefore protective landing + recovery) gets dense on-policy data.
+# Ramp starts once fell_over is off (a topple before that is just a reset).
+TOPPLE_PUSH_INTERVAL_S = (4.0, 8.0)
+TOPPLE_PUSH_STAGES = [
+    {"step": 0,                                          "velocity_range": {"x": (-0.3, 0.3), "y": (-0.3, 0.3)}},
+    {"step": FELL_OVER_DISABLE_ITER * NUM_STEPS_PER_ENV, "velocity_range": {"x": (-0.6, 0.6), "y": (-0.6, 0.6)}},
+    {"step": 400 * NUM_STEPS_PER_ENV,                    "velocity_range": {"x": (-0.9, 0.9), "y": (-0.9, 0.9)}},
+    {"step": 800 * NUM_STEPS_PER_ENV,                    "velocity_range": {"x": (-1.2, 1.2), "y": (-1.2, 1.2)}},
+]
 
 # Failed-recovery backstop: continuously fallen this long → terminate/reset.
 # Run-6: 5 s → 8 s. At 5 s a face-down recovery spent most of its budget
@@ -150,13 +341,37 @@ FALLEN_TIMEOUT_S = 8.0
 # started prone+econ together at 800 and prone recovery never bootstrapped.
 # Crouch slice alone starts at 800: near-upright states, tax-free until econ,
 # and it doubles as full-stand posture data (run 6 stood truly vertical).
+# Warm start: same shape, sooner (the walk needs no bootstrap window). Run-1
+# fix (2): side_prob puts that fraction of the prone slice ON A SIDE (the
+# dominant natural fall end-state, 79% in eval); the rest splits by face_down_prob.
+# Crouch slice 0.15 → 0.20 and from iter 150: it doubles as stand-tall data.
+_PRONE_ITERS = (150, 700, 1000, 1400) if WARM_START else (800, 1500, 2000, 2500)
+PRONE_SIDE_PROB = 0.5
 PRONE_RAMP_STAGES = [
-    {"step": 0,                        "params": {"prone_prob": 0.00, "face_down_prob": 1.0,  "crouch_prob": 0.00}},
-    {"step": 800 * NUM_STEPS_PER_ENV,  "params": {"prone_prob": 0.00, "face_down_prob": 1.0,  "crouch_prob": 0.15}},
-    {"step": 1500 * NUM_STEPS_PER_ENV, "params": {"prone_prob": 0.15, "face_down_prob": 0.80, "crouch_prob": 0.15}},
-    {"step": 2000 * NUM_STEPS_PER_ENV, "params": {"prone_prob": 0.30, "face_down_prob": 0.65, "crouch_prob": 0.15}},
-    {"step": 2500 * NUM_STEPS_PER_ENV, "params": {"prone_prob": 0.45, "face_down_prob": 0.50, "crouch_prob": 0.15}},
+    {"step": 0,                                   "params": {"prone_prob": 0.00, "face_down_prob": 1.0,  "side_prob": PRONE_SIDE_PROB, "crouch_prob": 0.00}},
+    {"step": _PRONE_ITERS[0] * NUM_STEPS_PER_ENV, "params": {"prone_prob": 0.00, "face_down_prob": 1.0,  "side_prob": PRONE_SIDE_PROB, "crouch_prob": 0.20}},
+    {"step": _PRONE_ITERS[1] * NUM_STEPS_PER_ENV, "params": {"prone_prob": 0.15, "face_down_prob": 0.80, "side_prob": PRONE_SIDE_PROB, "crouch_prob": 0.20}},
+    {"step": _PRONE_ITERS[2] * NUM_STEPS_PER_ENV, "params": {"prone_prob": 0.30, "face_down_prob": 0.65, "side_prob": PRONE_SIDE_PROB, "crouch_prob": 0.20}},
+    {"step": _PRONE_ITERS[3] * NUM_STEPS_PER_ENV, "params": {"prone_prob": 0.45, "face_down_prob": 0.50, "side_prob": PRONE_SIDE_PROB, "crouch_prob": 0.20}},
 ]
+
+
+def _collapse_curricula_to_final(cfg: ManagerBasedRlEnvCfg) -> None:
+    """Warm start: pin every inherited velocity curriculum at its final stage.
+
+    Every velocity-recipe curriculum is a list of ``{"step": ..., ...}`` stage
+    dicts under some ``*_stages`` param (weight_stages / standing_stages /
+    range_stages / param_stages / push_stages). Keep only the last stage, at
+    step 0, and — for reward_weight terms — also write the final weight into
+    the reward cfg so step 0 itself already runs at the final value.
+    """
+    for name, term in cfg.curriculum.items():
+        for key, val in list(term.params.items()):
+            if isinstance(val, list) and val and all(isinstance(v, dict) and "step" in v for v in val):
+                final = {**val[-1], "step": 0}
+                term.params[key] = [final]
+                if key == "weight_stages" and term.params.get("reward_name") in cfg.rewards:
+                    cfg.rewards[term.params["reward_name"]].weight = final["weight"]
 
 
 def make_microduck_velstand_env_cfg(play: bool = False, rough: bool = False) -> ManagerBasedRlEnvCfg:
@@ -168,9 +383,43 @@ def make_microduck_velstand_env_cfg(play: bool = False, rough: bool = False) -> 
     if play:
         cfg.terminations.pop("fell_over", None)
 
-    # Full-collision standup XML: trunk/head shells keep their contacts so the
-    # robot can physically lie on the ground and push off it.
-    cfg.scene.entities = {"robot": MICRODUCK_STANDUP_ROBOT_CFG}
+    # Warm start: pin the inherited velocity curricula at their final stage
+    # BEFORE adding velstand's own (which must still ramp).
+    if WARM_START and not play:
+        _collapse_curricula_to_final(cfg)
+
+    # True full-collision model: the robot can lie on / push off any part, and
+    # the servo housings are named so the impact sensor below can single them
+    # out. 70 collision geoms (vs 11) → more simultaneous contacts in a pile-up;
+    # the rough-terrain nconmax (200) is the right budget here on flat too.
+    cfg.scene.entities = {"robot": MICRODUCK_ALLCOLLISIONS_ROBOT_CFG}
+    cfg.sim.nconmax = max(cfg.sim.nconmax or 0, 200)
+
+    servo_ground_cfg = ContactSensorCfg(
+        name="servo_ground_contact",
+        primary=ContactMatch(mode="geom", pattern=rf"^.*{SERVO_GEOM_SUFFIX}$", entity="robot"),
+        secondary=ContactMatch(mode="body", pattern="terrain"),
+        fields=("force",),
+        reduce="netforce",
+        num_slots=1,
+    )
+    head_ground_cfg = ContactSensorCfg(
+        name="head_ground_contact",
+        primary=ContactMatch(mode="body", pattern=rf"^({'|'.join(HEAD_BODY_NAMES)})$", entity="robot"),
+        secondary=ContactMatch(mode="body", pattern="terrain"),
+        fields=("force",),
+        reduce="netforce",
+        num_slots=1,
+    )
+    trunk_ground_cfg = ContactSensorCfg(
+        name="trunk_ground_contact",
+        primary=ContactMatch(mode="body", pattern="^trunk_base$", entity="robot"),
+        secondary=ContactMatch(mode="body", pattern="terrain"),
+        fields=("force",),
+        reduce="netforce",
+        num_slots=1,
+    )
+    cfg.scene.sensors = tuple(cfg.scene.sensors) + (servo_ground_cfg, head_ground_cfg, trunk_ground_cfg)
 
     # velocity env's head_pose_bias flows in UNGATED (fine on a walk-only env —
     # fell_over terminates fallen episodes there). Velstand episodes SURVIVE
@@ -230,15 +479,55 @@ def make_microduck_velstand_env_cfg(play: bool = False, rough: bool = False) -> 
             "gate_tilt_above_deg": REWARD_GATE_TILT_DEG,
         },
     )
-    # NO impact penalties (first run lesson #2): the standup SPECIALIST has
-    # none — the duck's recovery pushes off with head/trunk, and the head
-    # penalty (-1.0 @ 2 N) taxed exactly that strategy. Falls stayed cheaper
-    # than getting up. joint_torque_rate_l2 below covers landing harshness.
     # Standup's proven anti-jitter term: penalizes torque CHANGE (not magnitude
     # or rotation) → smooths transfer without blocking the recovery flip.
+    # Run-1 fix (1): both smoothness taxes ×FALLEN_SMOOTHNESS_SCALE while fallen.
     cfg.rewards["joint_torque_rate_l2"] = RewardTermCfg(
-        func=microduck_mdp.joint_torque_rate_l2,
+        func=microduck_mdp.joint_torque_rate_l2_fallen_scaled,
         weight=-2e-3,
+        params={"fallen_scale": FALLEN_SMOOTHNESS_SCALE, "gate_tilt_above_deg": REWARD_GATE_TILT_DEG},
+    )
+    ar = cfg.rewards["action_rate_l2"]
+    cfg.rewards["action_rate_l2"] = RewardTermCfg(
+        func=microduck_mdp.action_rate_l2_fallen_scaled,
+        weight=ar.weight,
+        params={"fallen_scale": FALLEN_SMOOTHNESS_SCALE, "gate_tilt_above_deg": REWARD_GATE_TILT_DEG},
+    )
+
+    # ── Servo-protection costs (see module docstring) ─────────────────────────
+    # 2026-07 lesson kept: the head penalty at -1.0 @ 2 N taxed the push-off-
+    # with-the-head recovery. These thresholds sit ABOVE quasi-static push-off
+    # loads (≈ body weight, 7 N) so only impact spikes are billed. All start at
+    # PROTECT_STAGE0_FRAC and ramp to full at PROTECT_FULL_ITER.
+    cfg.rewards["servo_impact"] = RewardTermCfg(
+        func=microduck_mdp.body_impact_cost,
+        weight=SERVO_IMPACT_WEIGHT * PROTECT_STAGE0_FRAC,
+        params={"sensor_name": servo_ground_cfg.name, "threshold": SERVO_IMPACT_THRESH_N},
+    )
+    cfg.rewards["head_impact"] = RewardTermCfg(
+        func=microduck_mdp.body_impact_cost,
+        weight=HEAD_IMPACT_WEIGHT * PROTECT_STAGE0_FRAC,
+        params={"sensor_name": head_ground_cfg.name, "threshold": HEAD_IMPACT_THRESH_N},
+    )
+    cfg.rewards["trunk_impact"] = RewardTermCfg(
+        func=microduck_mdp.body_impact_cost,
+        weight=TRUNK_IMPACT_WEIGHT * PROTECT_STAGE0_FRAC,
+        params={"sensor_name": trunk_ground_cfg.name, "threshold": TRUNK_IMPACT_THRESH_N},
+    )
+    cfg.rewards["servo_acc_spike"] = RewardTermCfg(
+        func=microduck_mdp.servo_acc_spike_penalty,
+        weight=SERVO_ACC_SPIKE_WEIGHT * PROTECT_STAGE0_FRAC,
+        params={"acc_thresh": SERVO_ACC_THRESH},
+    )
+    cfg.rewards["servo_stall"] = RewardTermCfg(
+        func=microduck_mdp.servo_stall_penalty,
+        weight=SERVO_STALL_WEIGHT * PROTECT_STAGE0_FRAC,
+        params={"torque_thresh": SERVO_STALL_TORQUE, "vel_thresh": SERVO_STALL_VEL},
+    )
+    # ⚠️ POSITIVE weight: trunk_vertical_accel_penalty returns -|a_z| already.
+    cfg.rewards["gentle_rise"] = RewardTermCfg(
+        func=microduck_mdp.trunk_vertical_accel_penalty,
+        weight=GENTLE_RISE_WEIGHT * PROTECT_STAGE0_FRAC,
     )
 
     # ── Recovery economics (first-run lessons #3-#5) ──────────────────────────
@@ -296,9 +585,22 @@ def make_microduck_velstand_env_cfg(play: bool = False, rough: bool = False) -> 
         params={
             "prone_prob": 0.0,        # ramped by the prone_init_prob curriculum
             "face_down_prob": 1.0,
+            "side_prob": PRONE_SIDE_PROB,
             "prone_z_min": 0.05,
             "prone_z_max": 0.09,
             "crouch_prob": 0.0,       # ramped by the prone_init_prob curriculum
+        },
+    )
+
+    # Topple pushes (docstring): the velocity env's push_robot (±0.3 m/s) trains
+    # stumble recovery; this one trains FALLING. Range ramped by topple_push_range.
+    cfg.events["topple_push"] = EventTermCfg(
+        func=push_by_setting_velocity,
+        mode="interval",
+        interval_range_s=(1.0, 2.0) if play else TOPPLE_PUSH_INTERVAL_S,
+        params={
+            "velocity_range": TOPPLE_PUSH_STAGES[-1 if play else 0]["velocity_range"],
+            "asset_cfg": SceneEntityCfg("robot"),
         },
     )
 
@@ -362,6 +664,29 @@ def make_microduck_velstand_env_cfg(play: bool = False, rough: bool = False) -> 
             ],
         },
     )
+    if not play:
+        cfg.curriculum["topple_push_range"] = CurriculumTermCfg(
+            func=microduck_mdp.push_curriculum,
+            params={"event_name": "topple_push", "push_stages": TOPPLE_PUSH_STAGES},
+        )
+    for name, full in (
+        ("servo_impact", SERVO_IMPACT_WEIGHT),
+        ("head_impact", HEAD_IMPACT_WEIGHT),
+        ("trunk_impact", TRUNK_IMPACT_WEIGHT),
+        ("servo_acc_spike", SERVO_ACC_SPIKE_WEIGHT),
+        ("servo_stall", SERVO_STALL_WEIGHT),
+        ("gentle_rise", GENTLE_RISE_WEIGHT),
+    ):
+        cfg.curriculum[f"{name}_weight"] = CurriculumTermCfg(
+            func=microduck_mdp.reward_weight,
+            params={
+                "reward_name": name,
+                "weight_stages": [
+                    {"step": 0, "weight": full * PROTECT_STAGE0_FRAC},
+                    {"step": PROTECT_FULL_ITER * NUM_STEPS_PER_ENV, "weight": full},
+                ],
+            },
+        )
     cfg.curriculum["com_upward_weight"] = CurriculumTermCfg(
         func=microduck_mdp.reward_weight,
         params={
@@ -392,7 +717,7 @@ MicroduckVelStandRlCfg = RslRlOnPolicyRunnerCfg(
         activation="elu",
         obs_normalization=True,
     ),
-    algorithm=PpoWithSymmetryCfg(
+    algorithm=PpoWithExpertBcCfg(
         value_loss_coef=1.0,
         use_clipped_value_loss=True,
         clip_param=0.2,
@@ -406,11 +731,12 @@ MicroduckVelStandRlCfg = RslRlOnPolicyRunnerCfg(
         desired_kl=0.01,
         max_grad_norm=1.0,
         symmetry_cfg=None,
+        bc_cfg={**default_bc_cfg(), "coef": EXPERT_BC_COEF, "gate_tilt_deg": EXPERT_BC_GATE_TILT_DEG} if ENABLE_EXPERT_BC else None,
     ),
     wandb_project="mjlab_microduck",
     experiment_name="velstand",
     run_name="velstand",
     save_interval=250,
     num_steps_per_env=24,
-    max_iterations=20_000,
+    max_iterations=6_000,
 )
