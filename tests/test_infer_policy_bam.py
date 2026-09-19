@@ -95,3 +95,75 @@ def test_bam_step_loop_runs_with_live_friction(bam_sim):
     assert (np.abs(data.ctrl) <= limit + 1e-9).all()  # ctrl IS the motor torque
     assert (model.dof_frictionloss[dofs] > 0).all()  # BAM budget written every step
     assert np.allclose(model.dof_damping[dofs], bam_model.friction_viscous.value)
+
+
+_FREEJOINT_TWO_HINGE_XML = """
+<mujoco>
+  <option timestep="0.005"/>
+  <worldbody>
+    <body name="trunk" pos="0 0 0.2">
+      <freejoint name="root"/>
+      <geom type="sphere" size="0.05" mass="1"/>
+      <body name="left_link" pos="0 0.05 0">
+        <joint name="left" type="hinge" axis="0 1 0" frictionloss="0.1"/>
+        <geom type="capsule" fromto="0 0 0 0 0 -0.1" size="0.02" mass="0.2"/>
+      </body>
+      <body name="right_link" pos="0 -0.05 0">
+        <joint name="right" type="hinge" axis="0 1 0" frictionloss="0.1"/>
+        <geom type="capsule" fromto="0 0 0 0 0 -0.1" size="0.02" mass="0.2"/>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <motor name="left" joint="left"/>
+    <motor name="right" joint="right"/>
+  </actuator>
+</mujoco>
+"""
+
+
+def test_friction_dof_efc_id_is_dof_not_joint():
+    """FRICTION_DOF efc_id is a dof index, not a joint index.
+
+    A freejoint occupies 6 dofs, so matching efc_id against actuator.trnid
+    (joint id) is off by 5. MujocoController must strip that force using
+    dof_indexes — the same contract as bam.mjlab.BamActuator.
+    """
+    from bam.model import load_model
+    from bam.mujoco import MujocoController
+
+    mj_model = mujoco.MjModel.from_xml_string(_FREEJOINT_TWO_HINGE_XML)
+    data = mujoco.MjData(mj_model)
+    bam_model = load_model(motor_name="xl330", model="m6")
+    bam_model.actuator.kp = 200.0
+    bam_model.actuator.vin = 7.4
+    ctrl = MujocoController(bam_model, ["left", "right"], mj_model, data)
+
+    joint_indexes = np.asarray(ctrl.joint_indexes)
+    dof_indexes = np.asarray(ctrl.dof_indexes)
+    assert not np.array_equal(joint_indexes, dof_indexes)
+    assert np.array_equal(dof_indexes, joint_indexes + 5)
+
+    data.qvel[dof_indexes] = 0.5  # Coulomb rows must carry force, not just exist
+    ctrl.q_target[:] = 0.0
+    mujoco.mj_forward(mj_model, data)
+    ctrl.update()
+    mujoco.mj_step(mj_model, data)
+
+    nefc = int(data.nefc)
+    fric = data.efc_type[:nefc] == int(mujoco.mjtConstraint.mjCNSTR_FRICTION_DOF)
+    efc_ids = data.efc_id[:nefc][fric]
+    assert set(dof_indexes.tolist()).issubset(set(efc_ids.tolist()))
+    assert not set(joint_indexes.tolist()).issubset(set(efc_ids.tolist()))
+
+    qfrc_fric = np.zeros(mj_model.nv)
+    np.add.at(qfrc_fric, efc_ids, data.efc_force[:nefc][fric])
+
+    def gather(ids):
+        efc_id_repeated = np.repeat([data.efc_id[:nefc]], len(ids), axis=0)
+        id_repeated = np.repeat([ids], nefc, axis=0).T
+        sel = (efc_id_repeated == id_repeated) & fric
+        return np.sum(data.efc_force[:nefc] * sel, axis=1)
+
+    assert np.allclose(gather(dof_indexes), qfrc_fric[dof_indexes])
+    assert not np.allclose(gather(joint_indexes), qfrc_fric[dof_indexes])

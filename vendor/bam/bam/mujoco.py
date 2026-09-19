@@ -66,8 +66,8 @@ class MujocoController:
         self.act_indexes = [
             self.mujoco_model.actuator(name).id for name in self.actuator
         ]
-        # Joint indexes (efc_id)
-        # Retrieved using the first element of the trnid
+        # Joint indexes (transmission target). FRICTION_DOF efc_id is a dof
+        # address, not a joint id — matching in update() uses dof_indexes.
         self.joint_indexes = [
             self.mujoco_model.actuator(name).trnid[0] for name in self.actuator
         ]
@@ -173,13 +173,16 @@ class MujocoController:
             + self.mujoco_data.qfrc_constraint[self.dof_indexes]
         )
 
-        # Repeats the ids (now N_id x N_efc)
+        # Repeats the ids (now N_id x N_efc). mjCNSTR_FRICTION_DOF stores the
+        # dof index in efc_id (engine_core_constraint.c), unlike LIMIT_JOINT
+        # which stores a joint id. Matching against joint_indexes is silently
+        # wrong on any model with a freejoint (Microduck: offset 5).
         efc_id_repeated = np.repeat(
             [self.mujoco_data.efc_id], len(self.actuator), axis=0
         )
         # Repeat the indexes (now N_id x N_efc)
         id_repeated = np.repeat(
-            [self.joint_indexes], len(self.mujoco_data.efc_id), axis=0
+            [self.dof_indexes], len(self.mujoco_data.efc_id), axis=0
         ).T
         # Do the batched test (element wise)
         selector = efc_id_repeated == id_repeated
