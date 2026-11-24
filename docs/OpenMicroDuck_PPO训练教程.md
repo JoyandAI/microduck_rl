@@ -61,27 +61,13 @@ PY
 
 ## 3. 云端环境与第一次检查
 
-使用带 NVIDIA GPU 的 Linux x86‑64 实例、持久化数据盘和 Python 3.12。RTX 5090 实例选兼容 CUDA 12.8 的驱动。使用本教程对应的完整训练工程。通过 GitHub 获取时选择 `JoyandAI/microduck_rl` 的 `openmd-training` 分支，获取命令见 [AutoDL 指南第一节](autodl_standup_retrain_guide.md#1-准备实例和源码)。将工程放到数据盘，进入含 `pyproject.toml` 的目录运行后续命令。[训练工程配置](../pyproject.toml) · [OpenMicroDuck 项目](https://github.com/JoyandAI/OpenMicroDuck)
-
-配套清单固定 torch 2.9.1、warp‑lang 1.12.0、mujoco 3.10.0、mujoco‑warp 3.8.1 和 mjlab 1.3.0。安装脚本配置依赖，随后用 editable 安装把本工程的任务插件注册到同一环境。[依赖清单](../requirements-autodl.txt) · [AutoDL 安装指南](autodl_standup_retrain_guide.md)
+从新实例开始，请先完成 [Linux GPU 实例、源码与 Python 环境准备](autodl_standup_retrain_guide.md#1-准备实例和源码)和[依赖安装与预检](autodl_standup_retrain_guide.md#2-安装并确认训练环境)。这两节给出持久卷、NVIDIA 驱动、Python 3.12、HTTPS 包源和实际 wheel 下载的检查方法。起立和行走共用同一个环境。跟随本教程时，把安装命令里的任务换成下列带回差行走任务，其余安装和验证步骤相同。
 
 ```bash
-cd /root/autodl-tmp/microduck_rl
-nvidia-smi
-df -h .
-ls scripts/check_openmd_training.py src/mjlab_microduck/tasks/openmd_env_cfg.py
-ls src/mjlab_microduck/robot/openmd/{robot_walk_backlash.xml,meshes/stl/sole_left.stl}
-ls vendor/bam/bam/params/hd1910/m6.json
 bash scripts/autodl_setup.sh --task Mjlab-Velocity-Flat-Backlash-OpenMD
-export PATH="$HOME/.local/bin:$PATH"
-uv pip install --python .venv/bin/python --no-deps -e .
-source .venv/bin/activate
-python -c 'import torch; assert torch.cuda.is_available(); print(torch.__version__, torch.version.cuda, torch.cuda.get_device_name(0))'
-list-envs | grep -F OpenMD
-python scripts/check_openmd_training.py
 ```
 
-看到 `HD-1910 m6 OK`、任务 ID 和对应的 `get_openmd_*_spec` 再启动训练。检查脚本会验证源码和 BAM 的实际导入位置、m6 哈希、七个示例任务的工厂及其 XML/网格可编译性。若安装前的文件检查缺项，请先取得含完整 OpenMD 训练资产的发行版本。若文件齐全、注册表却只出现 `MicroDuck`，核对当前 venv、editable 安装的源码位置和 `mjlab.tasks` 入口。找不到 m6 时核对 `vendor/bam` 的实际导入路径。已按清单安装后，后续直接使用同一 venv 的 `train` 和 `play`。[预检源码](../scripts/check_openmd_training.py)
+脚本从 `uv.lock` 生成版本约束。配套清单固定 torch 2.9.1、warp-lang 1.12.0、mujoco 3.10.0、mujoco-warp 3.8.1 和 mjlab 1.3.0。完成 editable 安装、`uv pip check`、关键包导入和 CUDA 运算检查后，运行 `python scripts/check_openmd_training.py`。看到 `HD-1910 m6 OK`，并确认 `Mjlab-Velocity-Flat-Backlash-OpenMD` 对应 `get_openmd_walk_backlash_spec`，再开始行走训练。预检也会核对当前源码、BAM 导入位置及实际 XML/网格。缺少模型时检查是否取得完整训练工程；任务未出现时检查虚拟环境与 editable 安装位置。之后在同一个已激活环境中使用 `train`、`play` 和导出脚本。[训练工程配置](../pyproject.toml) · [依赖清单](../requirements-autodl.txt) · [预检源码](../scripts/check_openmd_training.py)
 
 ## 4. 找代码、选任务、改奖励
 
@@ -158,7 +144,14 @@ PT="$RUN/model_$CK.pt"
 play "$TASK" --checkpoint-file "$PT" --num-envs 1 --viewer viser
 ```
 
-用可视化观察零指令、持续前进、定点转向、一次可重复的侧向扰动和解除指令后的停稳。只比较显示方式时，保持同一任务与 PT。有桌面的机器可把 `--viewer viser` 换成 `--viewer native`。两者都由 mjlab 推进训练侧环境。使用 `python scripts/play_web.py "$TASK" --checkpoint-file "$PT" --num-envs 1` 可指定网页入口，默认端口 8081，可用 `PLAY_VISER_PORT` 改端口。比较两次播放时记录同一指令随时间的变化、初始状态和真实仿真时间。网页帧率只反映显示效果。[网页回放入口](../scripts/play_web.py)
+用可视化观察零指令、持续前进、定点转向、一次可重复的侧向扰动和解除指令后的停稳。云端无图形桌面时用 Viser；桌面复核时，把选中的 `.pt` 和对应任务名复制到装有同版本训练环境、能打开 OpenGL 窗口的工作站。设置 `PT` 为桌面上的实际文件路径。下面的命令使用一个 CPU 环境和原生 MuJoCo 窗口，加载本教程的带回差行走任务：
+
+```bash
+TASK=Mjlab-Velocity-Flat-Backlash-OpenMD
+play "$TASK" --checkpoint-file "${PT:?请先设置桌面检查点路径}" --viewer native --device cpu --num-envs 1
+```
+
+在 Windows 桌面上，按 [Windows PowerShell 回放](autodl_standup_retrain_guide.md#windows-powershell-回放)运行对应命令。回放普通 OpenMD 行走检查点时，沿用它训练时的 `Mjlab-Velocity-Flat-OpenMD`。只比较显示方式时保持 PT、任务、设备与环境数一致；网页入口可用 `python scripts/play_web.py "$TASK" --checkpoint-file "$PT" --device cpu --num-envs 1`，默认端口 8081，可用 `PLAY_VISER_PORT` 调整。两种 viewer 都由 mjlab 推进同一类训练环境。对照时记录指令、初始条件和实际仿真时间；跨仿真器检查见第 7 节。[网页回放入口](../scripts/play_web.py)
 
 **回放用 PT，部署用包含观测归一化的 ONNX。** 用 Ctrl+C 关闭 viewer 后，在同一终端运行下面的导出和校验命令。导出器将策略写入指定文件。
 
