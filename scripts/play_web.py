@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 """`play` with mjlab's **web (viser) viewer** on a free port.
 
-Why this exists: `uv run play <TASK> --viewer viser` is mjlab's official browser
-viewer, but `PlayConfig` exposes no port and `viser.ViserServer` defaults to
-**8080** — which on this box is already taken by the DSH Web GUI. So this shim
-just forces the viser port (default 8081) and defaults the viewer backend to
-`viser`, then hands off to mjlab's own `play` entrypoint unchanged.
+mjlab's browser viewer uses viser. This entry point selects the viser backend
+by default and reads its port from PLAY_VISER_PORT (default 8081). It delegates
+checkpoint loading and simulation to mjlab's `play` entry point.
 
 Usage (same args as `uv run play`):
-    uv run python scripts/play_web.py Mjlab-Velocity-Flat-MicroDuck \
-        --checkpoint-file logs/rsl_rl/velocity/<run>/model_14999.pt
+    # Use the exact task ID and checkpoint from training.
+    uv run --no-sync python scripts/play_web.py Mjlab-Velocity-Flat-Backlash-OpenMD \
+        --checkpoint-file logs/rsl_rl/openmd_velocity/<run>/model_9999.pt
 
     PLAY_VISER_PORT=8082 uv run python scripts/play_web.py ...   # 换端口
     ... --viewer native                                          # 仍想用原生窗口
@@ -20,6 +19,7 @@ Open the printed URL in a browser. Extra flags (`--num-envs`, `--device`,
 
 from __future__ import annotations
 
+import argparse
 import os
 import socket
 import sys
@@ -55,14 +55,16 @@ def main() -> int:
     argv = sys.argv[1:]
     # Default to the web viewer: with DISPLAY set, play's "auto" picks the native
     # window, which is invisible to a remote/web client.
-    if "--viewer" not in argv:
+    parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+    parser.add_argument("--viewer")
+    options, _ = parser.parse_known_args(argv)
+    if options.viewer is None:
         argv += ["--viewer", "viser"]
 
-    print("=" * 72, flush=True)
-    print(f"[play_web] viewer=viser  port={_PORT}", flush=True)
-    print(f"[play_web] open:  http://127.0.0.1:{_PORT}", flush=True)
-    print(f"[play_web]   or:  http://{_host_hint()}:{_PORT}", flush=True)
-    print("=" * 72, flush=True)
+    viewer = options.viewer or "viser"
+    print(f"[play_web] viewer={viewer}", flush=True)
+    if viewer == "viser":
+        print(f"[play_web] http://127.0.0.1:{_PORT} or http://{_host_hint()}:{_PORT}", flush=True)
 
     sys.argv = [sys.argv[0]] + argv
     from mjlab.scripts.play import main as mjlab_play_main

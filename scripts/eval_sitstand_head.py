@@ -38,6 +38,9 @@ from mjlab_microduck.tasks import mdp as mdp_mod
 
 CTRL_DT = 0.02  # 50 Hz
 HEAD_JOINTS = ("neck_pitch", "head_pitch", "head_yaw", "head_roll")
+# Trunk z at/below which the robot counts as SEATED. SIT_Z = 0.060; 0.065 is the
+# acceptance bar used everywhere else (`queue_round2_report.py`, `sit_seed_sweep.sh`).
+SIT_REACHED_Z = 0.065
 
 
 def parse_schedule(s: str) -> list[tuple[int, float]]:
@@ -60,6 +63,14 @@ def main() -> int:
                          "by a timeout reset (default task value is 12 s, which silently "
                          "turned the last phase's steady window into a teleported spawn)")
     ap.add_argument("--device", default="cuda:0")
+    ap.add_argument("--seed", type=int, default=None,
+                    help="RNG seed. STRONGLY recommended: sitstand DR is NOT gated on "
+                         "play=True (only the terrain curriculum and the push interval "
+                         "are), so an unseeded run draws its own CoM/encoder-bias/mass/"
+                         "friction and TWO RUNS OF THE SAME ONNX DISAGREE. Measured: "
+                         "the same sitstand_headfix ck3000 ONNX reached z=0.058 on one "
+                         "draw and only 0.104 on another -- 'it sits' and 'it cannot sit' "
+                         "from one artifact, one sample each.")
     ap.add_argument("--params-json", default=None,
                     help="explicit BAM params JSON (e.g. the snapshot the policy was trained with)")
     args = ap.parse_args()
@@ -68,6 +79,9 @@ def main() -> int:
 
     cfg = load_env_cfg(args.task, play=True)
     cfg.scene.num_envs = 1
+    if args.seed is not None:
+        cfg.seed = args.seed
+        print(f"[i] seed = {args.seed}")
     total_s = sum(d for _, d in schedule)
     if args.episode_length_s > cfg.episode_length_s:
         print(f"[i] episode_length_s {cfg.episode_length_s} -> {args.episode_length_s}")
@@ -111,6 +125,9 @@ def main() -> int:
     servo_ids = mdp_mod._servo_joint_ids(unwrapped, robot)
     joint_names = [robot.joint_names[i] for i in servo_ids]
     head_idx = [joint_names.index(n) for n in HEAD_JOINTS]
+    # jaw_soft carries the head collision geoms in robot_allcollisions.xml.
+    _hb, _ = robot.find_bodies("jaw_soft", preserve_order=True)
+    head_body_id = int(_hb[0])
 
     obs_td = env.reset()[0]
     term = unwrapped.command_manager.get_term("twist")
@@ -137,6 +154,7 @@ def main() -> int:
         label = f"seg{si}_{'SIT' if flag else 'STAND'}"
         n_steps = int(round(dur / CTRL_DT))
         steady_from = int(n_steps * 0.7)  # last 30% of the segment = settled
+        t_seg0 = t  # segment start, for TIME-TO-SIT (see below)
         for k in range(n_steps):
             term.command[:, 0] = float(flag)
             obs_td, _, dones, _ = step_once()
@@ -163,8 +181,43 @@ def main() -> int:
             bucket["neck_abs"].append(float(jp[head_idx[0]]))
             bucket["err"].append(float(np.mean(np.abs(err))))
             bucket["hcmd_neck"].append(float(hcmd[0]))
+            # Head-ground LOAD. This is the quantity the 2026-09-16 fix prices
+            # (`mdp.posture_head_ground_penalty`), and the acceptance table asks for
+            # it directly: the defect is not "the head is low", it is "the head is
+            # CARRYING THE ROBOT" (measured 3.16 N = 37 % of body weight pre-fix).
+            # Absent sensor (older cfg) -> 0.0 so this script still runs.
+            hg = 0.0
+            if "head_ground_contact" in unwrapped.scene.sensors:
+                f = unwrapped.scene.sensors["head_ground_contact"].data.force
+                if f is not None:
+                    hg = float(abs(f[0, 0, 2]))
+            bucket["head_force_n"].append(hg)
+            # Head BODY height. The joint angle alone cannot answer "is the head
+            # drooping": after the 2026-09-16 fix the neck still parks near its
+            # stop while the head carries ZERO load and the trunk stands upright,
+            # so "head low" and "head bearing weight" are different questions and
+            # need different numbers. Pre-fix the head was both low AND loaded.
+            bucket["head_z"].append(float(robot.data.body_link_pos_w[0, head_body_id, 2]))
+            # Extremes over the WHOLE segment. The steady-state mean answers "where
+            # did it settle"; it cannot answer "did it ever get there", and those
+            # differ: the fixed sit-stand policy reaches z=0.058 seated at t=6-7 s
+            # but is already standing again by the end of the SIT segment, so its
+            # steady mean (0.105) looks like "never sat down" when it plainly did.
+            bucket["seg_min_z"].append(float(pos[2]))
+            bucket["seg_max_z"].append(float(pos[2]))
+            # TIME TO SIT. "Can it sit" and "does it sit promptly" are different
+            # questions, and the measured answer differs: the fixed policy reaches
+            # z=0.055 in SOME draws within ~1 s and in others only after 5-11 s of
+            # holding a 20 deg forward lean at UNCHANGED height, while the pre-fix
+            # policy does it in 1-2 s in 24/24 draws. A min-z-over-a-4 s-window
+            # criterion cannot tell those apart -- it just calls the slow draws
+            # "cannot sit". Record the time from the segment's first commanded step
+            # to the first trunk z <= SIT_REACHED_Z.
+            if not bucket["sit_t"] and float(pos[2]) <= SIT_REACHED_Z:
+                bucket["sit_t"].append(t - t_seg0)
             if k >= steady_from:
-                for key in ("z", "tilt", "neck_rel", "head_rel", "err", "hcmd_neck"):
+                for key in ("z", "tilt", "neck_rel", "head_rel", "err", "hcmd_neck",
+                            "head_force_n", "head_z"):
                     phases[label]["steady_" + key].append(bucket[key][-1])
             if step_i % 50 == 0:  # every 1.0 s — integer modulo, not float
                 timeline.append((t, label, float(pos[2]), tilt,
@@ -187,7 +240,8 @@ def main() -> int:
               f"{np.mean(d['err']):>11.4f}")
     print()
     print("  --- STEADY STATE ONLY (last 30% of each segment) ---")
-    hdr2 = f"{'phase':<14}{'z':>9}{'tilt':>9}{'neck_rel':>10}{'head_rel':>10}{'neck_abs':>10}{'hcmd_neck':>11}{'err':>9}"
+    hdr2 = (f"{'phase':<14}{'z':>9}{'tilt':>9}{'neck_rel':>10}{'head_rel':>10}"
+            f"{'neck_abs':>10}{'hcmd_neck':>11}{'err':>9}{'headF_N':>9}{'head_z_mm':>10}")
     print(hdr2)
     print("-" * len(hdr2))
     for label in (f"seg{i}_{'SIT' if f else 'STAND'}" for i, (f, _) in enumerate(schedule)):
@@ -197,9 +251,25 @@ def main() -> int:
         g = lambda k: np.mean(d["steady_" + k])  # noqa: E731
         print(f"{label:<14}{g('z'):>9.3f}{g('tilt'):>9.1f}{g('neck_rel'):>10.3f}"
               f"{g('head_rel'):>10.3f}{np.mean(d['neck_abs'][-len(d['steady_z']):]):>10.3f}"
-              f"{g('hcmd_neck'):>11.3f}{g('err'):>9.4f}")
+              f"{g('hcmd_neck'):>11.3f}{g('err'):>9.4f}"
+              f"{g('head_force_n'):>9.3f}{g('head_z')*1000:>9.1f}")
     print()
+    print()
+    print("  --- DID IT ACHIEVE THE POSTURE? (extreme over the whole segment) ---")
+    for label in (f"seg{i}_{'SIT' if f else 'STAND'}" for i, (f, _) in enumerate(schedule)):
+        d = phases.get(label)
+        if not d:
+            continue
+        tgt = 0.060 if "SIT" in label else 0.115
+        st = d.get("sit_t") or []
+        stx = (f"   reached {tgt if tgt < 0.1 else tgt:.3f} at t={st[0]:.2f} s "
+               f"after the command" if st else "   NEVER reached it in this window")
+        print(f"    {label:<14} z min {min(d['seg_min_z']):.3f}  max "
+              f"{max(d['seg_max_z']):.3f}   (target {tgt:.3f}){stx if 'SIT' in label else ''}")
     print("  neck_abs = absolute neck_pitch [rad]; HOME = +0.3491 (= +20deg).")
+    print("  headF_N  = |vertical head-ground contact force| [N]. The 2026-09-16 fix")
+    print("             targets THIS: pre-fix it read ~3.16 N = 37% of body weight,")
+    print("             i.e. the head was carrying the robot. Acceptance: ~0.")
 
     print()
     print("  HOME neck_pitch/head_pitch = +0.3491 rad each; rel<0 means the head is BELOW")

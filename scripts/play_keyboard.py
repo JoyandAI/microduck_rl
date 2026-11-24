@@ -155,6 +155,22 @@ def main() -> int:
                 if "push" in cname:
                     cfg.curriculum.pop(cname)
             print("[play_keyboard] play-mode pushes disabled (0.5-1.0 s interval)", flush=True)
+        # Episodic timeout: play inherits the TRAINING episode length (20 s for the
+        # velocity family, 12 s sitstand, 5 s roulade), so the robot is teleported
+        # back to its spawn pose on a timer while you are watching. That is a reset
+        # nobody asked for: it kills the gait you were looking at, and it arrives
+        # without warning. Default 1000 s -- the same convention as
+        # play_keyboard_onnx.py, long enough that a reset means a FALL, not a
+        # timeout. R is then the only reset that matters.
+        # `PLAY_KB_EPISODE_S=<seconds>` restores a finite episode (e.g. 20).
+        #
+        # Walking off is not a problem: the native viewer's camera tracks the robot
+        # (`cam.trackbodyid`), so it stays in frame however far it travels.
+        episode_s = _os.environ.get("PLAY_KB_EPISODE_S")
+        cfg.episode_length_s = 1000.0 if episode_s is None else float(episode_s)
+        print(f"[play_keyboard] episode length = {cfg.episode_length_s:g} s "
+              f"({'periodic reset effectively off' if episode_s is None else 'from PLAY_KB_EPISODE_S'})",
+              flush=True)
         term_cfg = getattr(cfg, "commands", {}).get("twist")
         if term_cfg is not None:
             term_cfg.resampling_time_range = (1e9, 1e9)

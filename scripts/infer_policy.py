@@ -8,12 +8,18 @@ import math
 import os
 import pickle
 import queue
-import select
 import sys
-import termios
 import threading
 import time
-import tty
+
+IS_WINDOWS = sys.platform == "win32"
+if IS_WINDOWS:
+    import msvcrt  # Windows console keyboard (termios/tty/select are Unix-only)
+else:
+    import select
+    import termios
+    import tty
+
 import numpy as np
 import mujoco
 import mujoco.viewer
@@ -26,17 +32,17 @@ MICRODUCK_XML = "src/mjlab_microduck/robot/microduck/scene.xml"
 MICRODUCK_ROLLERS_XML = "src/mjlab_microduck/robot/microduck/scene_rollers.xml"
 MICRODUCK_BALL_XML = "src/mjlab_microduck/robot/microduck/scene_ball.xml"
 
-# BAM M6 defaults — MUST mirror `_BAM_ACTUATOR_KWARGS` in
+# BAM defaults — MUST mirror `_BAM_ACTUATOR_KWARGS` in
 # src/mjlab_microduck/robot/microduck_constants.py (the actuator every policy is
 # trained against in warp). Not imported from there: that module drags in
 # mjlab/torch/warp (~16 s import) for a CPU rehearsal script. Locked by
 # tests/test_infer_policy_bam.py.
-BAM_MOTOR_NAME = "xl330"
-BAM_MODEL = "m6"
-BAM_KP_FW = 200.0                 # microduck's preserved firmware stiffness
-BAM_VIN_RANGE = (6.5, 8.2)        # per-env battery voltage DR in training
-BAM_VIN_DROP_GAIN_RANGE = (0.0, 0.2)  # load-dependent sag V_drop = gain * sum|tau|
-BAM_VIN_MIN = 6.0                 # floor on effective voltage after sag
+BAM_MOTOR_NAME = "hd1910"
+BAM_MODEL = "m6"                 # xgoduck's fit (hd1910/m6.json)
+BAM_KP_FW = 5.0                  # P gain xgoduck's fit was identified with
+BAM_VIN_RANGE = (7.1, 7.9)       # regulated 7.5 V rail ±5% (per-env DR in training)
+BAM_VIN_DROP_RESISTANCE_RANGE = (0.0, 0.069)  # load-dependent sag V_drop = R * I_bat
+BAM_VIN_MIN = 6.5                # floor on effective voltage after sag
 BAM_MAX_CURRENT = None            # training runs WITHOUT the firmware current limiter
 # Stiff joint-friction constraint, copied from bam.mjlab.BamActuator
 # (stiff_frictionloss=True in training): warp has no noslip solver, so BAM
@@ -47,7 +53,7 @@ BAM_STIFF_SOLIMP_FRICTION = (0.99, 0.9999, 0.001, 0.5, 2.0)
 
 
 def load_bam_model(kp_fw: float, vin: float, max_current):
-    """Build the BAM M6 model + XL330 voltage-controlled actuator."""
+    """Build the BAM model + voltage-controlled actuator (BAM_MOTOR_NAME/BAM_MODEL)."""
     from bam.model import load_model
     bam_model = load_model(motor_name=BAM_MOTOR_NAME, model=BAM_MODEL)
     bam_model.actuator.kp = kp_fw
@@ -56,7 +62,7 @@ def load_bam_model(kp_fw: float, vin: float, max_current):
     return bam_model
 
 
-def load_mujoco_with_bam(xml_path: str, bam_model, timestep: float, vin_drop_gain, vin_min):
+def load_mujoco_with_bam(xml_path: str, bam_model, timestep: float, vin_drop_resistance, vin_min):
     """Load the scene and hand every non-passive actuator to bam.mujoco.MujocoController.
 
     Mirrors bam.mjlab.BamActuator.edit_spec (what warp does at training time):
@@ -96,10 +102,10 @@ def load_mujoco_with_bam(xml_path: str, bam_model, timestep: float, vin_drop_gai
     model.opt.timestep = timestep
     data = mujoco.MjData(model)
     bam_ctrl = MujocoController(bam_model, names, model, data,
-                                vin_drop_gain=vin_drop_gain, vin_min=vin_min)
+                                vin_drop_resistance=vin_drop_resistance, vin_min=vin_min)
     print(f"BAM {BAM_MODEL} actuators on {len(names)} joints: kt={kt:.4f} R={R:.4f} "
           f"vin={bam_model.actuator.vin:.2f}V kp_fw={bam_model.actuator.kp:.0f} "
-          f"vin_drop_gain={vin_drop_gain} vin_min={vin_min} "
+          f"vin_drop_resistance={vin_drop_resistance} vin_min={vin_min} "
           f"max_current={bam_model.actuator.max_current} forcerange=+/-{force_limit:.3f}Nm "
           f"armature={bam_model.actuator.get_extra_inertia():.2e}")
     return model, data, bam_ctrl, names
@@ -122,37 +128,47 @@ BALL_RADIUS = 0.035
 # - Joint observations are relative to (obs_joint_pos = current_pos - DEFAULT_POSE)
 # STAND2 pose (matches HOME_FRAME in microduck_constants.py): trunk shifted
 # ~5mm forward so the CoM sits over the ankle axis. Leg pitch chain leaned
-# forward vs the old pose: hip_pitch 30°→26.24°, ankle 30°→25.95°, knee 0°→0.28°.
+# forward vs the old pose: hip_pitch 30°→26.24°, ankle 30°→25.95°.
+# Knee is 0. neck_pitch and head_pitch are 20°.
 DEFAULT_POSE = np.array([
     0.0,      # left_hip_yaw
     -0.0873,  # left_hip_roll
     -0.4579,  # left_hip_pitch
-    -0.0049,  # left_knee
+    0.0,      # left_knee
     0.4530,   # left_ankle
-    0.3491,   # neck_pitch
-    0.3491,   # head_pitch
+    0.3491,   # neck_pitch (20 deg)
+    0.3491,   # head_pitch (20 deg)
     0.0,      # head_yaw
     0.0,      # head_roll
     0.0,      # right_hip_yaw
     0.0873,   # right_hip_roll
     0.4579,   # right_hip_pitch
-    0.0049,   # right_knee
+    0.0,      # right_knee
     -0.4530,  # right_ankle
 ], dtype=np.float32)
 
 
 class TerminalInput:
-    """Single-keypress reader on stdin (cbreak mode, background thread).
+    """Single-keypress reader on stdin (background thread), cross-platform.
 
     Replaces the MuJoCo viewer key_callback: keypresses in the viewer window
     also fire the viewer's built-in visualization shortcuts (frames, labels,
     rendering toggles…), so commands are read from the terminal instead.
-    Arrow keys arrive as ESC [ A/B/C/D escape sequences and are translated to
-    symbolic names ("up"/"down"/"left"/"right"); letters are lowercased.
-    cbreak (not raw) mode keeps ISIG enabled, so Ctrl+C still works.
+
+    POSIX: cbreak mode via termios (keeps ISIG, so Ctrl+C still works); arrow
+    keys arrive as ESC [ A/B/C/D escape sequences and are translated to
+    symbolic names ("up"/"down"/"left"/"right").
+    Windows: msvcrt.kbhit/getwch polling; arrow keys arrive as a \x00 or \xe0
+    prefix followed by H/P/K/M and are translated to the same symbolic names.
+    Letters are lowercased on both platforms.
+
+    NOTE (Windows): works in real consoles (cmd / PowerShell / Windows
+    Terminal). mintty (Git-Bash's default terminal) does not support
+    msvcrt console reads — run the script from a real console.
     """
 
     _ARROWS = {"A": "up", "B": "down", "C": "right", "D": "left"}
+    _ARROWS_WIN = {"H": "up", "P": "down", "K": "left", "M": "right"}
 
     def __init__(self):
         self._queue = queue.Queue()
@@ -165,8 +181,9 @@ class TerminalInput:
         if not self.enabled:
             print("WARNING: stdin is not a TTY — keyboard control disabled")
             return self
-        self._old_attrs = termios.tcgetattr(self._fd)
-        tty.setcbreak(self._fd)
+        if not IS_WINDOWS:
+            self._old_attrs = termios.tcgetattr(self._fd)
+            tty.setcbreak(self._fd)
         threading.Thread(target=self._reader, daemon=True).start()
         return self
 
@@ -186,6 +203,61 @@ class TerminalInput:
         return data.decode(errors="ignore") if data else None
 
     def _reader(self):
+        if IS_WINDOWS:
+            self._reader_windows()
+        else:
+            self._reader_posix()
+
+    def _read1_win(self, timeout_s: float):
+        """Read one getwch() char, polling kbhit() for up to timeout_s.
+
+        Needed for multi-byte keys: after an arrow prefix (\x00/\xe0), the
+        code byte may not be in the buffer yet in the same instant (observed
+        in Windows Terminal / ConPTY, where the two bytes arrive as separate
+        console records) — a bare kbhit() check right after the prefix
+        silently drops the key."""
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            if msvcrt.kbhit():
+                return msvcrt.getwch()
+            time.sleep(0.005)
+        return ""
+
+    def _reader_windows(self):
+        # Stateful prefix handling: \x00/\xe0 are ALWAYS followed by a code
+        # byte, but under ConPTY / Windows Terminal / IME the two bytes can
+        # arrive as separate console records with unbounded delay. A
+        # timeout-based read then drops the code byte, which leaks through
+        # as a plain letter ('H' -> 'h' -> accidental head-mode toggles on
+        # every short arrow press). So: after a prefix, interpret the NEXT
+        # byte unconditionally as the key code, whenever it arrives.
+        pending_prefix = False
+        while not self._stop.is_set():
+            if not msvcrt.kbhit():
+                time.sleep(0.02)
+                continue
+            ch = msvcrt.getwch()
+            if pending_prefix:
+                pending_prefix = False
+                name = self._ARROWS_WIN.get(ch)
+                if name:
+                    self._queue.put(name)
+                continue
+            if ch in ("\x00", "\xe0"):  # legacy console arrow/function prefix
+                pending_prefix = True
+                continue
+            if ch == "\x1b":  # VT input mode: arrows arrive as ESC [ A/B/C/D
+                if self._read1_win(0.2) == "[":
+                    final = self._read1_win(0.2)
+                    name = self._ARROWS.get(final)
+                    if name:
+                        self._queue.put(name)
+                continue  # bare ESC / unknown sequence: ignore
+            if ch == "\r":  # Enter also sends \n on POSIX
+                ch = "\n"
+            self._queue.put(ch.lower() if ch.isalpha() else ch)
+
+    def _reader_posix(self):
         while not self._stop.is_set():
             ch = self._read1(0.1)
             if not ch:
@@ -1198,14 +1270,15 @@ def main():
                              "Required for policies trained with the new pose-command-tracking setup. "
                              "Old policies (51D obs, head_offset added to ctrl) need this flag OFF.")
     parser.add_argument("--no-bam", action="store_true",
-                        help="Use the XML MuJoCo position actuators instead of the BAM M6 "
+                        help="Use the XML MuJoCo position actuators instead of the BAM "
                              "voltage/friction model the policies are trained against.")
-    parser.add_argument("--vin", type=float, default=7.4,
-                        help="BAM battery voltage [V]. Training samples per-env in "
-                             f"{BAM_VIN_RANGE}; 7.4 = nominal 2S LiPo.")
-    parser.add_argument("--vin-drop-gain", type=float, default=0.1,
-                        help="BAM load-dependent voltage sag gain [V/Nm], V = vin - gain*sum|tau|. "
-                             f"Training samples per-env in {BAM_VIN_DROP_GAIN_RANGE}. 0 disables.")
+    parser.add_argument("--vin", type=float, default=7.5,
+                        help="BAM supply voltage [V]. Training samples per-env in "
+                             f"{BAM_VIN_RANGE}; 7.5 = the training rail.")
+    parser.add_argument("--vin-drop-resistance", type=float, default=0.035,
+                        help="BAM battery + wire resistance [Ohm], V_drop = R * I_bat. "
+                             f"Training samples per-env in {BAM_VIN_DROP_RESISTANCE_RANGE}. "
+                             "0 disables.")
     parser.add_argument("--kp-fw", type=float, default=BAM_KP_FW,
                         help="BAM firmware P-gain (training uses %(default)s).")
     parser.add_argument("--push-max", type=float, default=1.0,
@@ -1215,12 +1288,10 @@ def main():
                              "disturbance rejection (velstand-style recovery needs the "
                              "VelStand policy).",)
     parser.add_argument("--motor", default="hd1910",
-                        choices=["hd1910", "hd1909", "hls2909", "xl330"],
-                        help="Motor model for the force-limit kt (default hd1910 = the servo the "
-                             "robot actually runs now; hd1909 is the same servo under the lab "
-                             "shorthand; xl330/hls2909 kept for replaying old policies)")
+                        choices=["hd1910", "hls2909", "xl330"],
+                        help="Motor parameter set used for force and current calculations (default: %(default)s).")
     parser.add_argument("--model", default=None,
-                        help="BAM model tier for the kt lookup (default: hd1910->m5, hls2909->m1, else m6)")
+                        help="BAM model tier for the kt lookup (default: hd1910->m6, hls2909->m1, else m6)")
     parser.add_argument("--current-limit", type=float, default=0.0,
                         help="Firmware current limit [A]. With BAM this is the duty-cycle "
                              "limiter of the voltage model (as bam models it); with --no-bam the "
@@ -1286,14 +1357,14 @@ def main():
     print(f"Loading MuJoCo model from: {xml_path}")
     bam_ctrl = None
     if not args.no_bam:
-        # Same actuator the policies are trained against in warp (BAM M6 XL330,
-        # voltage control + load-dependent friction budget), driven on CPU by
-        # bam.mujoco.MujocoController. Voltage DR collapses to fixed --vin /
-        # --vin-drop-gain (training samples them per env).
+        # Same actuator the policies are trained against in warp (BAM
+        # hd1910/m6, voltage control + load-dependent friction budget), driven
+        # on CPU by bam.mujoco.MujocoController. Voltage DR collapses to fixed
+        # --vin / --vin-drop-resistance (training samples them per env).
         bam_model = load_bam_model(args.kp_fw, args.vin, args.current_limit)
-        vin_drop_gain = args.vin_drop_gain if args.vin_drop_gain > 0 else None
+        vin_drop_resistance = args.vin_drop_resistance if args.vin_drop_resistance > 0 else None
         model, data, bam_ctrl, _bam_names = load_mujoco_with_bam(
-            xml_path, bam_model, 0.005, vin_drop_gain, BAM_VIN_MIN)
+            xml_path, bam_model, 0.005, vin_drop_resistance, BAM_VIN_MIN)
     else:
         model = mujoco.MjModel.from_xml_path(xml_path)
         model.opt.timestep = 0.005
@@ -1306,7 +1377,7 @@ def main():
     # controller instead (see load_bam_model). kt comes from the bam package.
     if args.no_bam and args.current_limit and args.current_limit > 0:
         from bam.model import load_model
-        _model = args.model or {"hd1910": "m5", "hd1909": "m5", "hls2909": "m1"}.get(args.motor, "m6")
+        _model = args.model or {"hd1910": "m6", "hls2909": "m1"}.get(args.motor, "m6")
         kt = load_model(motor_name=args.motor, model=_model).kt.value
         torque_limit = kt * args.current_limit
         model.actuator_forcerange[:, 0] = -torque_limit
@@ -1397,7 +1468,7 @@ def main():
     for i, qpos_idx in enumerate(policy.joint_qpos_indices):
         data.qpos[qpos_idx] = policy.default_pose[i]
     if bam_ctrl is not None:
-        bam_ctrl.reset(data.qpos)   # clears voltage-drop state, q_target = current qpos
+        bam_ctrl.reset()   # clears voltage-drop state, q_target = current qpos
     policy.set_position_targets(policy.default_pose)
     mujoco.mj_forward(model, data)
 
@@ -1619,6 +1690,17 @@ def main():
                     print(f"Head offset: neck={policy.head_offset[0]:.2f} pitch={policy.head_offset[1]:.2f} yaw={policy.head_offset[2]:.2f} roll={policy.head_offset[3]:.2f}")
                 elif policy.body_pose_mode and policy.new_cmd_obs:
                     policy.bump_body("yaw", -policy.body_cmd_step_angle)
+                else:
+                    # WASD convenience: S = brake/back one step
+                    new_x = np.clip(policy.vel_cmd[0] - policy.vel_step_x, policy.vel_min_x, policy.vel_max_x)
+                    policy.set_vel_cmd(new_x, policy.vel_cmd[1], policy.vel_cmd[2])
+            elif key == "w":
+                if policy.head_mode or policy.body_pose_mode:
+                    pass  # not bound in those modes
+                else:
+                    # WASD convenience: W = accelerate one step
+                    new_x = np.clip(policy.vel_cmd[0] + policy.vel_step_x, policy.vel_min_x, policy.vel_max_x)
+                    policy.set_vel_cmd(new_x, policy.vel_cmd[1], policy.vel_cmd[2])
         except Exception as e:
             print(f"Key press error: {e}")
 
@@ -1626,6 +1708,7 @@ def main():
     print("  [ Velocity mode (default) ]")
     print("  UP arrow:         increase lin_vel_x (push/accelerate)")
     print("  DOWN arrow:       decrease lin_vel_x (0=coast, negative=brake)")
+    print("  W / S:            accelerate / brake lin_vel_x stepwise (WASD convenience)")
     if args.roller:
         print("  LEFT/RIGHT arrow: turn left/right (ang_vel_z heading error)")
         print("  A / E:            turn left/right (ang_vel_z, incremental)")

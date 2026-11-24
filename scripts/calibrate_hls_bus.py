@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """HLS-2909(FT-HLS 固件 3.45, 型号号 6922)总线标定实验 —— 无需示波器/摆锤。
 
-利用固件自带反馈做"软件标定"(理论依据见 docs/rl_servo_analysis.md §6):
+利用固件反馈标定舵机参数：
   60 Present_Load   = 固件输出占空比 (0.1%/LSB, BIT10 方向)   → error_gain / max_pwm
   69 Present_Current= 电机相电流 (6.5mA/LSB, BIT15 方向)      → kt / R / 摩擦
   58 Present_Velocity= 当前速度 (0.732RPM/LSB, BIT15 方向)    → 速度
@@ -49,7 +49,7 @@ from read_hls_registers import (  # noqa: E402  (系统 python 只有 pyserial, 
     write_regs,
 )
 
-# ── 常量(来自 docs/feetech_hls_memtable.md / 实测) ────────────────────────────
+# HL-2909 固件增益和实测标定值。
 KPFW = 32            # EPROM 21 实测 Kp(Kp 1/8 固件缩放)
 KDFW = 32            # EPROM 22 实测 Kd(Kd 1/4 缩放)
 RESOLUTION = 4096    # 编码器分辨率/圈

@@ -158,8 +158,7 @@ class STS3215Actuator(VoltageControlledActuator):
 class HLS2909Actuator(VoltageControlledActuator):
     """Feetech HL-2909-C001 12 V TTL bus servo (position servo mode).
 
-    Reference numbers (identification in ``docs/feetech_hls_memtable.md`` of the
-    Microduck repository, firmware 3.45, all 15 servos identical):
+    Reference values for firmware 3.45:
 
     * ``kt`` = 1.454 N·m/A on the *output* side (datasheet KT = 14.83 kg·cm/A),
       gear ratio 320:1;
@@ -461,7 +460,7 @@ class HD1910Actuator(VoltageControlledActuator):
         self,
         testbench_class: Testbench = None,
         *,
-        vin: float = 5.0,
+        vin: float = 7.5,
         kp: float = 32,
         error_gain: float = 1.0,
         max_pwm: float = 1.0,
@@ -477,7 +476,7 @@ class HD1910Actuator(VoltageControlledActuator):
         可配置项；其中带 ``TODO(真机核对)`` 的项均为规格书未覆盖的模型语义假设：
 
         :param testbench_class: 测试台类（见 :class:`~bam.actuator.Actuator`）。
-        :param vin: 供电电压 [V]，默认 6.0（典型工作电压）。
+        :param vin: 供电电压 [V]，默认 7.5。
         :param kp: 固件位置环 P 增益，默认 32（真机回读 reg21/50 = 32，已确认）。
         :param error_gain: 把 ``kp * Δq`` 换算成占空比的系数，默认 1.0。
             自测(2026-09-09): 100 LSB 小阶跃回归 duty≈0.45–0.61%/LSB @kp=32，且大误差
@@ -518,13 +517,8 @@ class HD1910Actuator(VoltageControlledActuator):
         self.p_scale = p_scale
         self.d_scale = d_scale
 
-        # 固件"运行速度"上限 [rad/s] = 规格书空载转速 @6 V 92 RPM 按 5.0 V 折算 = 8.03 rad/s；
-        # （2026-09-10 起台架与整机统一按 5.0 V 供电，故默认值同步为 5 V 折算值）
-        # 真机回读 reg84/85/86 = 0（模式 4 无目标速度/加速度限幅），故默认不做爬坡，
-        # 该值仅在 use_rate_limiting=True 时才参与目标限幅。
-        # TODO(标定): 直流电机空载速度（kt/R 推出 6/0.7358 ≈ 8.15 rad/s）与规格书
-        # 9.63 rad/s 存在出入，需扫频/实测标定。
-        self.default_max_velocity = 8.0282   # 5.0 V 供电(台架/整机统一 5 V; @6V 规格 9.6338)
+        # Optional firmware speed limit: 92 rpm at 6 V, scaled to 7.5 V.
+        self.default_max_velocity = 12.0423
         # 固件"加速度"上限 [rad/s²]：规格书未给，暂用 HLS 惯例（500.0）。真机回读
         # reg85/86=0，默认（纯 PD）下该值不生效。
         # TODO(标定): 加速度/爬坡在模式 4 经回读确认不存在，此值仅保留给 use_rate_limiting。

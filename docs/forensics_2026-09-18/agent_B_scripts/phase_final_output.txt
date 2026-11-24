@@ -1,0 +1,70 @@
+======================================================================================================================
+official: 29/64 envs are walking (>=20 L-single-support onsets in 20 s)
+  duty   L 0.447  R 0.450  D 0.103   (D = double support OR double swing -- the sensor cannot tell them apart)
+  gait   period 0.491 s  freq 2.04 Hz  cycles/env 37.6
+  wz by phase   L    -1.63 +- 5.46   R    +1.05 +- 7.32   D    -1.76 +-12.72  [deg/s]
+  contribution  L    -0.61          R    +0.43          D    -0.16
+  => DC    -0.34 +- 3.04 deg/s   |  signed mismatch (-conL-conR)   +0.18 +- 2.58   corr(DC, mismatch) = -0.990
+  => AC    -1.04 +- 5.33 deg/s   |  DAC envelope    -2.68
+  per-cycle yaw impulse: L-half  -0.346  R-half  +0.223  double  -0.078  => NET  -0.200 +-1.527 deg/cycle (|net| 1.636)
+  lateral velocity by phase [mm/s]: L  -50.31  R  +63.97  D   -9.17  => L-R -114.28
+  hip_yaw pair: common mode all +0.03 deg  (L-phase +0.28 / R-phase -0.19, phase-locked +0.21)
+  hip_yaw swing p95-p05: L 3.70 deg  R 3.50 deg   | left hip_yaw L-phase -4.00 / R-phase -4.39
+  leg splay (hip_roll_L - hip_roll_R): L-phase -9.76  R-phase -9.77
+  ankle L: L-phase +19.88 / R-phase +22.98   ankle R: L-phase -22.86 / R-phase -21.35
+======================================================================================================================
+ck7000: 64/64 envs are walking (>=20 L-single-support onsets in 20 s)
+  duty   L 0.442  R 0.434  D 0.123   (D = double support OR double swing -- the sensor cannot tell them apart)
+  gait   period 0.407 s  freq 2.47 Hz  cycles/env 48.7
+  wz by phase   L   -36.30 +-10.00   R   +36.03 +-12.87   D    -0.97 +-21.28  [deg/s]
+  contribution  L   -15.87          R   +15.47          D    -0.30
+  => DC    -0.71 +- 9.98 deg/s   |  signed mismatch (-conL-conR)   +0.41 +- 7.57   corr(DC, mismatch) = -0.995
+  => AC   -31.34 +- 4.80 deg/s   |  DAC envelope   -72.33
+  per-cycle yaw impulse: L-half  -6.467  R-half  +6.245  double  -0.148  => NET  -0.371 +-3.928 deg/cycle (|net| 5.126)
+  lateral velocity by phase [mm/s]: L  -69.55  R  +68.18  D  -63.18  => L-R -137.73
+  hip_yaw pair: common mode all -0.19 deg  (L-phase +0.33 / R-phase -0.53, phase-locked +0.37)
+  hip_yaw swing p95-p05: L 6.10 deg  R 5.62 deg   | left hip_yaw L-phase +0.34 / R-phase -1.38
+  leg splay (hip_roll_L - hip_roll_R): L-phase +10.97  R-phase +19.73
+  ankle L: L-phase +20.15 / R-phase +25.43   ankle R: L-phase -20.31 / R-phase -20.97
+======================================================================================================================
+ck12000: 64/64 envs are walking (>=20 L-single-support onsets in 20 s)
+  duty   L 0.399  R 0.387  D 0.214   (D = double support OR double swing -- the sensor cannot tell them apart)
+  gait   period 0.436 s  freq 2.30 Hz  cycles/env 45.1
+  wz by phase   L   -44.08 +-10.76   R   +22.34 +- 9.00   D   -14.01 +-19.37  [deg/s]
+  contribution  L   -17.48          R    +8.59          D    -3.02
+  => DC   -11.92 +- 7.70 deg/s   |  signed mismatch (-conL-conR)   +8.89 +- 4.20   corr(DC, mismatch) = -0.925
+  => AC   -26.07 +- 6.08 deg/s   |  DAC envelope   -66.43
+  per-cycle yaw impulse: L-half  -7.627  R-half  +3.752  double  -1.310  => NET  -5.185 +-3.422 deg/cycle (|net| 6.782)
+  lateral velocity by phase [mm/s]: L  -70.95  R  +57.62  D  +10.96  => L-R -128.57
+  hip_yaw pair: common mode all +0.90 deg  (L-phase +1.23 / R-phase +0.63, phase-locked +0.25)
+  hip_yaw swing p95-p05: L 8.45 deg  R 5.50 deg   | left hip_yaw L-phase -0.74 / R-phase -0.54
+  leg splay (hip_roll_L - hip_roll_R): L-phase +18.27  R-phase +19.91
+  ankle L: L-phase +21.90 / R-phase +26.39   ankle R: L-phase -18.71 / R-phase -18.56
+======================================================================================================================
+R3hrl1: 64/64 envs are walking (>=20 L-single-support onsets in 20 s)
+  duty   L 0.397  R 0.451  D 0.152   (D = double support OR double swing -- the sensor cannot tell them apart)
+  gait   period 0.388 s  freq 2.59 Hz  cycles/env 50.9
+  wz by phase   L   -29.57 +- 9.76   R   +28.22 +-11.28   D    -7.85 +-17.95  [deg/s]
+  contribution  L   -11.67          R   +12.54          D    -1.00
+  => DC    -0.13 +- 9.27 deg/s   |  signed mismatch (-conL-conR)   -0.87 +- 6.84   corr(DC, mismatch) = -0.988
+  => AC   -24.21 +- 5.00 deg/s   |  DAC envelope   -57.79
+  per-cycle yaw impulse: L-half  -4.508  R-half  +4.865  double  -0.391  => NET  -0.034 +-3.662 deg/cycle (|net| 6.334)
+  lateral velocity by phase [mm/s]: L  -71.18  R  +72.12  D  -27.09  => L-R -143.29
+  hip_yaw pair: common mode all +0.48 deg  (L-phase -0.00 / R-phase +0.90, phase-locked -0.41)
+  hip_yaw swing p95-p05: L 6.36 deg  R 8.89 deg   | left hip_yaw L-phase +2.00 / R-phase +0.53
+  leg splay (hip_roll_L - hip_roll_R): L-phase -0.31  R-phase -0.40
+  ankle L: L-phase +20.74 / R-phase +23.04   ankle R: L-phase -19.34 / R-phase -11.48
+======================================================================================================================
+R4db03: 64/64 envs are walking (>=20 L-single-support onsets in 20 s)
+  duty   L 0.459  R 0.477  D 0.064   (D = double support OR double swing -- the sensor cannot tell them apart)
+  gait   period 0.346 s  freq 2.94 Hz  cycles/env 58.0
+  wz by phase   L   -42.27 +-13.28   R   +42.64 +- 7.55   D    +1.76 +-14.42  [deg/s]
+  contribution  L   -19.41          R   +20.25          D    +0.10
+  => DC    +0.93 +- 9.02 deg/s   |  signed mismatch (-conL-conR)   -0.84 +- 8.38   corr(DC, mismatch) = -0.997
+  => AC   -39.66 +- 5.15 deg/s   |  DAC envelope   -84.91
+  per-cycle yaw impulse: L-half  -6.836  R-half  +6.921  double  +0.032  => NET  +0.117 +-3.044 deg/cycle (|net| 5.196)
+  lateral velocity by phase [mm/s]: L  -80.80  R  +55.34  D  -16.40  => L-R -136.14
+  hip_yaw pair: common mode all +0.42 deg  (L-phase -0.03 / R-phase +0.98, phase-locked -0.49)
+  hip_yaw swing p95-p05: L 9.63 deg  R 7.41 deg   | left hip_yaw L-phase -0.18 / R-phase -0.25
+  leg splay (hip_roll_L - hip_roll_R): L-phase -0.85  R-phase -1.24
+  ankle L: L-phase +20.69 / R-phase +21.94   ankle R: L-phase -20.50 / R-phase -17.02

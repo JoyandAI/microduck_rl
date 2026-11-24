@@ -29,7 +29,7 @@
 温度 >50°C / |I|>阈值×0.7s / |位置误差|>0.8rad×1.0s(卡死) / 单条 30s 看门狗 → 立即断扭矩。
 ⚠ HD-1910(mode4) 的 reg69 电流读数不可信(起步瞬态恒 ≈2.1A, 峰值可达 4A > 物理堵转
 1.36A) → 该型号默认把电流中止关掉(--current-abort 0), 卡死检测与温度/看门狗为主;
-HLS 保持 1.0A 阈值。见 /home/joyandai/bam/docs/identification/hd1910_servo_notes.md §6.5/6.6。
+HLS 保持 1.0A 阈值。
 ⚠ 摆锤摆动平面内手勿入; 端部砝码请勿随意加大(完整静态重力矩上限 0.35N·m)。
 q_zero 超出按所选轨迹振幅实算的安全带(HD mode4 误差不回绕, 目标须整体落于 [0,4095])
 时, 先自动用 reg31(位置偏移)居中到 2048(动态算值, 换舵机通用; 探针+双符号编码回退+
@@ -318,7 +318,11 @@ def center_zero_reg31(ser, pid, target=2048.0):
 
 
 SETTLE_QUIET_RAD = 0.02      # 稳位判据: |q - q_zero|
-SETTLE_QUIET_VEL = 0.25      # 稳位判据: |dq| [rad/s]
+SETTLE_QUIET_VEL = 0.30      # 稳位判据: |dq| [rad/s]
+# 速度必须用**多拍跨度**差分: 单拍差分(7.3ms)在 ±1 LSB 量化下的噪声地板 ≈ 0.0015/0.0073
+# ≈ 0.21 rad/s, 与 0.25 的旧阈值只差 19% → 摆杆明明已静止却偶发"稳位超时"
+# (2026-09-15 实测: 残余 +0.005 rad 仍报超时)。改用 3 拍跨度(≈22ms) → 噪声 ≈0.07 rad/s。
+SETTLE_VEL_SPAN = 3          # 速度差分跨度 [拍]
 SETTLE_HOLD_S = 0.25         # 需连续满足的时长
 SETTLE_MAX_S = 3.0           # 稳位超时(超过就带残余继续, 并打印警告)
 
@@ -342,7 +346,7 @@ def settle_at_zero(ser, pid, q_zero, r16, safety):
     write_regs(ser, pid, 46, [0xFF, 0x7F])
     t0 = time.time()
     quiet_since = None
-    prev = None
+    hist = []                      # [(q,t), ...] 最近 SETTLE_VEL_SPAN+1 拍
     while time.time() - t0 < SETTLE_MAX_S:
         write_regs(ser, pid, 42, g)
         write_regs(ser, pid, 40, [1])
@@ -350,7 +354,11 @@ def settle_at_zero(ser, pid, q_zero, r16, safety):
         t = time.time()
         if pos is not None:
             q = (((pos - q_zero + 2048) % 4096) - 2048) * LSB_RAD
-            v = abs(q - prev[0]) / max(t - prev[1], 1e-6) if prev else 0.0
+            hist.append((q, t))
+            if len(hist) > SETTLE_VEL_SPAN + 1:
+                hist.pop(0)
+            q0h, t0h = hist[0]
+            v = abs(q - q0h) / max(t - t0h, 1e-6) if len(hist) > 1 else 0.0
             prev = (q, t)
             if abs(q) < SETTLE_QUIET_RAD and v < SETTLE_QUIET_VEL:
                 if quiet_since is None:
@@ -388,7 +396,7 @@ def main() -> int:
                     help="日志 motor 标签(默认 auto: reg3=7946→hd1910, 其余→hls2909)")
     ap.add_argument("--current-abort", type=float, default=None,
                     help="电流中止阈值 [A](|I|>阈值持续 0.7s → 断扭); 0=关闭。"
-                         "缺省: HLS=1.0; HD-1910=0(关闭, reg69 读数不可信, 见 hd1910_servo_notes.md §6.5/6.6)")
+                         "缺省: HLS=1.0; HD-1910=0(关闭, mode 4 下 reg69 的瞬态读数不可靠)")
     ap.add_argument("--jam-err-rad", type=float, default=JAM_ERR_RAD,
                     help=f"位置误差卡死检测阈值 [rad](默认 {JAM_ERR_RAD}); 0=关闭")
     ap.add_argument("--jam-hold-s", type=float, default=JAM_HOLD_S,
@@ -489,8 +497,7 @@ def main() -> int:
 
     if args.current_abort is None:
         # HD-1910 mode 4 的 reg69 不是可信电流: 起步瞬态恒读 ≈2.1A(317 LSB),
-        # 单条内峰值可达 4.06A, 均 > 5.1V/3.75Ω≈1.36A 的物理堵转上限
-        # (hd1910_servo_notes.md §6.5 T5 / §6.6⑤, 2026-09-10 又一次实测 2.03A 误中止)。
+        # 单条内峰值可达 4.06A, 均 > 5.1V/3.75Ω≈1.36A 的物理堵转上限。
         # → HD 默认关闭电流中止, 安全链改由 温度 + 30s 看门狗 + 位置误差卡死检测
         #   + 3A 物理保险丝 + 人在场 承担; HLS 保持原 1.0A 阈值。
         current_abort_a = 0.0 if motor == "hd1910" else CURRENT_LIMIT_A

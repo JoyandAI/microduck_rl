@@ -70,11 +70,11 @@ EPISODE_LENGTH_S = 6.0
 SITTING_JOINT_OVERRIDES = {
     1:   0.0,      # left  hip_roll   (HOME -0.0873)
     2:  -0.4079,   # left  hip_pitch  (HOME -0.4579; +0.05 = slight fwd lean)
-    3:   1.35,     # left  knee       (HOME -0.0049)
+    3:   1.35,     # left  knee       (HOME 0)
     4:   0.0,      # left  ankle      (HOME +0.4530)
     10:  0.0,      # right hip_roll   (HOME +0.0873)
     11:  0.4079,   # right hip_pitch  (HOME +0.4579)
-    12: -1.35,     # right knee       (HOME +0.0049)
+    12: -1.35,     # right knee       (HOME 0)
     13:  0.0,      # right ankle      (HOME -0.4530)
 }
 

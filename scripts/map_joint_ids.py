@@ -6,7 +6,7 @@
     /usr/bin/python3 scripts/map_joint_ids.py --port /dev/ttyACM0 --ids 10,11,12,13,14,20,21,22,23,24
 
 原理: 对每个 ID 依次开扭矩→目标位置 +120 LSB(≈10.5°)→ 读 Δpos → 回位 → 关扭矩。
-你在旁边看"哪个连杆在动", 把对应关系记下来, 回填到 record_leg_pendulum.py 的 --id 参数。
+观察哪个连杆在动，记录舵机 ID 与关节名称的对应关系。
 
 安全: 临时限流 0.975A(reg44=150, 结束恢复 300); 温度>50 停; 每次微动后回位。
 """
@@ -66,7 +66,7 @@ def main() -> int:
         print(f"  ID{pid:2d}: Δ={mv} LSB ({mv*360/4096 if mv else 0:+.1f}°)  温度={t}°C  ← 哪根连杆动?")
 
     ser.close()
-    print("[i] 完成。把『哪个 ID = 哪个关节』的对应关系记下来, 回填到 record_leg_pendulum.py 的 --id/--joint。")
+    print("[i] 完成。请保存舵机 ID 与关节名称的对应表。")
     return 0
 
 

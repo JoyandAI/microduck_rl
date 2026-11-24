@@ -89,14 +89,23 @@ def bench(monkeypatch):
 
 
 def test_zero_belt_default_trajs():
-    lo, hi, amp = rpb.zero_belt(["sin_time_square", "sin_sin", "lift_and_drop", "up_and_down"])
+    # zero_belt takes trajectory CALLABLES (main() passes `trajmap[n]`, i.e. the
+    # --amp-max-deg-scaled wrappers, so the belt measures the amplitude actually
+    # commanded). Passing names made traj_peak_rad call a str and fail; the
+    # expected numbers below were always computed from these four waveforms.
+    from bam.trajectory import trajectories as T
+
+    names = ["sin_time_square", "sin_sin", "lift_and_drop", "up_and_down"]
+    lo, hi, amp = rpb.zero_belt([T[n] for n in names])
     assert amp == 1147
     assert (lo, hi) == (1211, 2884)
     assert lo <= 2048 <= hi  # 自动居中目标 2048 永远在安全带内
 
 
 def test_zero_belt_adapts_to_selection():
-    lo, hi, amp = rpb.zero_belt(["nothing"], margin_lsb=10)
+    from bam.trajectory import trajectories as T
+
+    lo, hi, amp = rpb.zero_belt([T["nothing"]], margin_lsb=10)
     assert amp == 0 and lo == 10 and hi == 4085
 
 

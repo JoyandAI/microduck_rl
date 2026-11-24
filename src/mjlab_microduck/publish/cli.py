@@ -10,7 +10,8 @@
     # A gait for a slot (no hold, no unwind: it runs until told otherwise)
     uv run publish --onnx walk.onnx --repo <user>/microduck-my-walk --kind perpetual --slot walk
 
-Either way the repo gets `policy.onnx`, a schema-2 `manifest.json` and a README, the file is
+Either way the repo gets `policy.onnx`, a schema-2 `manifest.json` and a README (plus `replay.mp4`
+when given `--video`, which the Hub's replay widget shows), the file is
 checked for the 61 -> 14 shape and smoke-run before anything is uploaded, and an existing
 `policy.onnx` is not overwritten without `--force`. `--dry-run` writes the repo contents to a
 local directory and stops.
@@ -49,6 +50,12 @@ class PublishConfig:
     """A local model_<N>.pt instead of wandb."""
     onnx: str | None = None
     """An already-exported ONNX. Validated, not re-exported."""
+    video: str | None = None
+    """An MP4 of the policy running (e.g. from scripts/render_policy.py). Uploaded as replay.mp4."""
+
+    base_model: str | None = None
+    """Remix: the Hub repo of the policy this one was trained from (warm start / fine-tune).
+    Declared as `base_model` in the model card so the Hub links the two."""
 
     # -- what the manifest says
     name: str | None = None
@@ -144,6 +151,9 @@ def run(cfg: PublishConfig) -> int:
     if "/" not in cfg.repo:
         _fail("--repo must be `<user-or-org>/<name>`")
     name = cfg.name or _default_name(cfg.repo)
+    video = Path(cfg.video) if cfg.video is not None else None
+    if video is not None and (not video.is_file() or video.suffix.lower() != ".mp4"):
+        _fail(f"--video {cfg.video}: expected an existing .mp4 file")
 
     workdir = Path(tempfile.mkdtemp(prefix="microduck-publish-"))
     try:
@@ -175,19 +185,23 @@ def run(cfg: PublishConfig) -> int:
         staged.mkdir()
         shutil.copyfile(onnx_path, staged / m.POLICY_FILE)
         (staged / "manifest.json").write_text(m.dump_manifest(manifest))
-        (staged / "README.md").write_text(m.render_readme(manifest, cfg.repo))
+        (staged / "README.md").write_text(m.render_readme(manifest, cfg.repo, cfg.base_model))
+        if video is not None:
+            shutil.copyfile(video, staged / m.REPLAY_FILE)
 
         if cfg.dry_run:
             dest = Path.cwd() / f"publish-{name}"
             if dest.exists():
                 shutil.rmtree(dest)
             shutil.copytree(staged, dest)
-            print(f"[publish] dry run: wrote {dest}/ (policy.onnx, manifest.json, README.md)")
+            print(f"[publish] dry run: wrote {dest}/ ({', '.join(sorted(p.name for p in dest.iterdir()))})")
             return 0
 
         from huggingface_hub import HfApi
 
         api = HfApi()
+        if cfg.base_model is not None and not api.repo_exists(cfg.base_model, repo_type="model"):
+            _fail(f"--base-model {cfg.base_model}: no such model repo on the Hub (or no access)")
         api.create_repo(cfg.repo, repo_type="model", private=cfg.private, exist_ok=True)
         existing = set(api.list_repo_files(cfg.repo))
         onnx_files = {f for f in existing if f.endswith(".onnx")}

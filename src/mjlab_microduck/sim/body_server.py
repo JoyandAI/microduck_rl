@@ -82,9 +82,9 @@ MOUTH_INDEX = JOINT_NAMES.index("mouth")
 # `duck_control::DEFAULT_POSITION`, and `DEFAULT_POSE` in `infer_policy.py` with the mouth put back.
 # The right leg is mirrored, not symmetric — worth reading rather than assuming.
 HOME_POSE = (
-    0.0, -0.0873, -0.4579, -0.0049, 0.4530,
+    0.0, -0.0873, -0.4579, 0.0, 0.4530,
     0.3491, 0.3491, 0.0, 0.0, 0.0,
-    0.0, 0.0873, 0.4579, 0.0049, -0.4530,
+    0.0, 0.0873, 0.4579, 0.0, -0.4530,
 )
 
 SCENES = Path(__file__).resolve().parents[1] / "robot" / "microduck"

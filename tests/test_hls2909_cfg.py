@@ -1,7 +1,6 @@
 """HL-2909-C001 actuator + config regression tests (CPU, no GPU needed).
 
-Locks in the Feetech HL-2909 swap invariants documented in
-docs/feetech_hls2915_servo_swap.md and docs/actuator_physics_swap_plan.md:
+Checks the following Feetech HL-2909 properties:
 
 * the bundled hls2909 motor resolves and loads its params JSON;
 * the HLS actuator law: accel+velocity double target smoothing, P(1/8)+D(1/4),

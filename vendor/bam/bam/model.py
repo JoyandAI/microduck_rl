@@ -233,7 +233,7 @@ class Model:
         """
         Load parameters from a given filename
         """
-        with open(json_file) as f:
+        with open(json_file, encoding="utf-8") as f:
             data = json.load(f)
             self.load_parameters_from_dict(data)
 
@@ -343,7 +343,7 @@ def load_model(
     :raises FileNotFoundError: If the requested bundled motor or model does not exist.
     """
     path = _resolve_json_path(json_file, motor_name, model)
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         data = json.load(f)
         return load_model_from_dict(data)
 

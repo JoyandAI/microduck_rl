@@ -37,7 +37,7 @@ def test_cpu_bam_constants_mirror_training_cfg(ip):
     assert ip.BAM_MODEL == k["model"]
     assert ip.BAM_KP_FW == k["kp_fw"]
     assert ip.BAM_VIN_RANGE == k["vin_range"]
-    assert ip.BAM_VIN_DROP_GAIN_RANGE == k["vin_drop_gain_range"]
+    assert ip.BAM_VIN_DROP_RESISTANCE_RANGE == k["vin_drop_resistance_range"]
     assert ip.BAM_VIN_MIN == k["vin_min"]
     assert ip.BAM_MAX_CURRENT == k.get("max_current")
     assert ip.BAM_STIFF_SOLREF_FRICTION == BamActuator._STIFF_SOLREF_FRICTION
@@ -83,7 +83,7 @@ def test_bam_step_loop_runs_with_live_friction(bam_sim):
     data.qpos[qa + 3 : qa + 7] = [1, 0, 0, 0]
     jq = model.jnt_qposadr[model.actuator_trnid[:, 0]]
     data.qpos[jq] = ip.DEFAULT_POSE
-    ctrl.reset(data.qpos)
+    ctrl.reset()
     ctrl.q_target[:] = ip.DEFAULT_POSE
     mujoco.mj_forward(model, data)
     dofs = model.jnt_dofadr[model.actuator_trnid[:, 0]]

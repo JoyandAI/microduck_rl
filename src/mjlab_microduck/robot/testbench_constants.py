@@ -1,7 +1,6 @@
 """Single-servo testbench entity configuration for sim2real validation.
 
-NOTE (2026-09): the bench servo is now the **Feetech HD-1910-C001** (21 g, 5 V
-rail) — the whole pendulum identification in `hd1910_calibration/` was run on it.
+The bench uses a Feetech HD-1910-C001 servo (21 g, 5 V rail).
 The XML file/dir keep their historical `xl330_test_bench` name (renaming them
 would churn the bench tooling); only the *actuator model* is updated to the servo
 actually mounted, so bench sims match the identified parameters.
@@ -51,10 +50,8 @@ HOME_FRAME = EntityCfg.InitialStateCfg(
 )
 
 
-# HD-1910-C001 on the bench. Same servo/params as the robot
-# (microduck_constants._BAM_ACTUATOR_KWARGS), so bench sims and robot training
-# cannot disagree. kp_fw=32 is the firmware Kp readback (reg50) — the old 200 was
-# the XL330 value and is ~6x too stiff for this servo.
+# The 5 V pendulum fit uses the HD-1910 m5 control law at kp_fw=32.
+# Robot training uses the 7.5 V m6 fit at kp_fw=5.
 testbench_actuators = BamActuatorCfg(
     motor_name="hd1910",
     model="m5",

@@ -1,14 +1,11 @@
 # microduck_rl — AutoDL training dependencies (third-party libs only; the repo itself is installed separately)
 #
-# Usage (from the repo root):
-#   uv pip install --python .venv/bin/python \
-#       --index-url https://pypi.tuna.tsinghua.edu.cn/simple -r requirements-autodl.txt
-# or let scripts/autodl_setup.sh install these entries one line at a time, so a failure
-# stops exactly at the offending package.
+# From the repo root: bash scripts/autodl_setup.sh
+# Use --index URL or export UV_DEFAULT_INDEX to select an HTTPS package mirror.
+# The installer applies the platform-specific constraints from uv.lock to every entry.
 #
 # Versions come from the repo's uv.lock / the verified local environment.
-# Order matters: torch and warp first, mjlab last. Otherwise mjlab's ">= constraints"
-# can pull warp-lang 1.13+ (warp 1.15 removed `wp.context`, which mjlab 1.3 uses).
+# Re-pin the simulation stack and W&B to the versions supported by mjlab and rsl-rl.
 
 # --- simulation core ---------------------------------------------------------
 torch==2.9.1                # deep learning + CUDA 12.8 runtime (PyPI x86_64 wheel ships sm_120, ready for RTX 5090)
@@ -16,6 +13,7 @@ warp-lang==1.12.0           # physics engine behind MuJoCo Warp; must stay on 1.
 mujoco==3.10.0              # CPU-side MuJoCo (export / rehearsal scripts)
 mujoco-warp==3.8.1          # GPU parallel physics (where the training FLOPs go); do not jump to 3.9+ (ls_parallel removed)
 mjlab==1.3.0                # training framework; pulls rsl-rl-lib==5.0.1 / tyro / wandb / tensorboard / viser / trimesh / tensordict
+wandb==0.24.0               # compatible with rsl-rl-lib 5.0.1 and uv.lock
 
 # --- numerics / export -------------------------------------------------------
 numpy==2.4.1                # numerics
@@ -39,10 +37,9 @@ rustypot>=1.4.2             # servo bus (real-robot scripts)
 
 # --- the repo itself (installed separately — deliberately not listed here) ---
 # After the packages above are in, run from the repo root:
-#   uv pip install --python .venv/bin/python --no-deps -e .
+#   Run the editable install command printed by scripts/autodl_setup.sh to reuse its index.
 # `--no-deps` is load-bearing: without it pip/uv pulls the unmodified
 # better-actuator-models from PyPI and overwrites vendor/bam (that copy has no
 # HD-1910 params), i.e. it silently swaps the actuator model.
-# This step does two things: puts src/mjlab_microduck on the venv path and registers
-# the `mjlab.tasks` entry point plus the `train` console script. Without it,
-# `list-envs` shows no Mjlab-*-MicroDuck task and training cannot start.
+# The editable install registers this repository's OpenMD and MicroDuck tasks
+# through the `mjlab.tasks` plugin. The `train` command runs mjlab's trainer.

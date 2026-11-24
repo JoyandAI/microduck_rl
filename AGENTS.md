@@ -1,12 +1,12 @@
 # AGENTS.md
 
-RL training environments for Microduck — a ~874 g, ~25 cm tall bipedal
-robot with 14 Dynamixel XL330 servos — built on [mjlab](https://github.com/mujocolab/mjlab)
-(MuJoCo Warp) with PPO (rsl_rl). Policies are trained here at 50 Hz, exported to
-ONNX, and deployed by the runtime in the `pollen-robotics/microduck` repo on
-the real robot. Sim2real transfer
-is the whole point: every convention below exists because breaking it produced a
-policy that worked in the viewer and failed on hardware.
+This repository trains 50 Hz PPO policies for two robot models using
+[mjlab](https://github.com/mujocolab/mjlab) and rsl_rl. Tasks with `MicroDuck`
+in their ID use the original robot geometry. For the OpenMD robot with Feetech
+HD-1910 servos, select a task with `OpenMD` in its ID. The task selects the
+robot geometry, HOME pose and collision model used in training and playback.
+See the [OpenMD PPO training guide](docs/OpenMicroDuck_PPO训练教程.md) for
+setup, reward tuning, checkpoint selection, ONNX export and hardware checks.
 
 ## Commands
 
@@ -18,12 +18,25 @@ uv run play <TASK_ID> --wandb-run-path <entity/project/run_id>
 uv run scripts/export.py <TASK_ID> --wandb-run-path <...>   # → ONNX (bakes obs normalizer — mandatory path)
 uv run publish --task <TASK_ID> --wandb-run-path <...> --checkpoint N --repo <user>/microduck-<name> --kind episodic --duration-s 4.0
                                                     # → HF Hub repo (policy.onnx + schema-2 manifest.json + README) the daemon loads via `robotctl policy add`
-uv run scripts/infer_policy.py --walking out.onnx   # CPU MuJoCo deployment rehearsal (BAM M6 actuators as in training; --no-bam = XML PD)
+uv run scripts/infer_policy.py --walking out.onnx --new-cmd-obs   # 61D policy, default MicroDuck scene
 uv run --with pytest pytest tests/
 ```
 
-A 5-iteration smoke test at 64 envs catches ~95% of config errors for cents.
-Never launch a long run without one.
+For OpenMD, run the following from the repository root in the environment
+activated by the [AutoDL setup guide](docs/autodl_standup_retrain_guide.md).
+Use `Mjlab-Velocity-Flat-OpenMD` for ordinary flat walking. The example below
+uses the walking task with drivetrain backlash.
+
+```bash
+TASK=Mjlab-Velocity-Flat-Backlash-OpenMD
+python scripts/check_openmd_training.py
+train "$TASK" --env.scene.num-envs 64 --agent.max-iterations 5
+```
+
+The preflight checks the active HD-1910 m6 calibration and loads the physics
+assets for seven representative tasks. Before a long run, confirm that the
+short run completes. To replay a training checkpoint, set `PT` to its path
+and use the same task ID with `play "$TASK" --checkpoint-file "$PT" --num-envs 1`.
 
 ## Repo map
 
@@ -34,7 +47,14 @@ Never launch a long run without one.
   shared base (robot, DR, obs, commands) other envs build on or mirror.
 - `src/mjlab_microduck/tasks/__init__.py` — task registration (base + `-Backlash-` variants).
 - `src/mjlab_microduck/tasks/backlash.py` — wraps any env cfg into its backlash twin.
-- `src/mjlab_microduck/robot/microduck_constants.py` — robot cfgs, HOME frame, BAM actuator cfg.
+- [OpenMD task factories](src/mjlab_microduck/tasks/openmd_env_cfg.py) select the
+  robot and PPO configuration for each registered OpenMD task.
+- [OpenMD robot configuration](src/mjlab_microduck/robot/openmd_constants.py) selects
+  the HOME pose and collision model. The [OpenMD asset directory](src/mjlab_microduck/robot/openmd/)
+  contains the robot MJCFs, scenes and their meshes.
+- [Shared actuator configuration](src/mjlab_microduck/robot/microduck_constants.py)
+  selects the [HD-1910 m6 calibration](vendor/bam/bam/params/hd1910/m6.json)
+  used in OpenMD training. The same module defines the original MicroDuck HOME.
 - `src/mjlab_microduck/robot/microduck/` — MJCF exports from Onshape
   (onshape-to-robot, one `config_mjcf_*.json` per model) + scenes + `add_backlash.py`.
   Collision families: `walk` (feet only), `groundcontact` (curated floor set),
@@ -66,8 +86,8 @@ Never launch a long run without one.
   Every actuator/obs/reward selector uses `^(?!passive_).*` — keep the prefix
   convention when adding joints, and new `passive_` regexes must not
   accidentally match backlash joints (`^passive_.*wheel`, not `^passive_.*`).
-- **Actuators are BAM** (voltage-controlled XL330 model, friction computed by
-  the actuator). Two consequences: any STANDALONE env cfg must register the
+- **BAM actuators** compute friction using the configured motor parameters.
+  Any STANDALONE env cfg must register the
   `expand_bam_friction_fields` startup event, and joint-friction DR must scale
   the actuator's `friction_scale` — `dof_frictionloss` is zeroed under BAM, so
   randomizing it is a silent no-op.
@@ -261,8 +281,11 @@ Never launch a long run without one.
   rotation speed.
 - IMU DR is zero-centered — it trains tolerance to misalignment magnitude, and
   CANNOT compensate a systematic mounting bias (that's a runtime calibration).
-- Real deployments hot-swap ONNX policies (walk / stand / trick) with a shared
-  obs contract — rehearse in `scripts/infer_policy.py` before touching the
-  robot, with the correct command-slot writes (a posture flag lives in the
-  twist vx slot; feeding all-zeros means "stand", which looks like "policy
-  ignores the button").
+- For independent CPU MuJoCo replay, `scripts/infer_policy.py` defaults to
+  MicroDuck geometry. For OpenMD, select the matching scene XML with `--scene`
+  and the 61D observation layout with `--new-cmd-obs`. Verify HOME, joint order,
+  action scaling, actuator settings and passive-joint encoder feedback against
+  the training task before interpreting the gait. Follow the Sim2Sim checks in
+  the [PPO guide](docs/OpenMicroDuck_PPO训练教程.md).
+- For command-driven SitStand, the posture flag occupies the twist vx slot.
+  An all-zero command requests standing.

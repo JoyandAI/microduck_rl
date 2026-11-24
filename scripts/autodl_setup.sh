@@ -4,15 +4,14 @@
 #  itself is installed separately, see the trailing notes).
 #
 #  The dependency list lives in requirements-autodl.txt. This script reads it
-#  line by line and installs one package per command, so a failure stops at the
-#  exact offending line and can be retried on its own.
+#  line by line and constrains each install to the versions in uv.lock.
 #
 #  Usage (repo already uploaded to the instance):
 #      cd /root/autodl-tmp/microduck_rl
-#      bash scripts/autodl_setup.sh                # install (Tsinghua PyPI mirror by default)
+#      bash scripts/autodl_setup.sh                # install uv and dependencies using the selected index
 #      bash scripts/autodl_setup.sh --upstream     # use upstream PyPI (mirror missing packages)
 #      bash scripts/autodl_setup.sh --list         # print the plan, install nothing
-#      bash scripts/autodl_setup.sh --train        # install, then launch standup training in background
+#      bash scripts/autodl_setup.sh --train --task Mjlab-StandUp-Flat-OpenMD
 #
 #  Target environment: Ubuntu + NVIDIA driver, RTX 5090 (Blackwell sm_120):
 #    - torch 2.9.1 PyPI x86_64 wheel bundles CUDA 12.8 runtime and carries sm_120
@@ -27,7 +26,7 @@ MIRROR=""
 UPSTREAM=0
 DO_LIST=0
 DO_TRAIN=0
-TASK="Mjlab-StandUp-Flat-MicroDuck"
+TASK="Mjlab-StandUp-Flat-OpenMD"
 ENVS=4096
 ITERS=""
 
@@ -47,9 +46,7 @@ done
 
 # Which PyPI index to use, in order of precedence:
 #   --upstream  >  --index URL  >  UV_DEFAULT_INDEX / PIP_INDEX_URL  >
-#   the index already configured in the image's pip.conf  >  Tsinghua
-# AutoDL images ship a pip.conf pointing at a mirror that is usually the fastest
-# from their network, so prefer that over a hardcoded default.
+#   an index in pip.conf, if present  >  Tsinghua
 if [ "$UPSTREAM" = "1" ]; then
   MIRROR="https://pypi.org/simple"
 elif [ -n "$MIRROR" ]; then
@@ -78,21 +75,24 @@ echo "repo root: $REPO_ROOT"
 
 REQ="$REPO_ROOT/requirements-autodl.txt"
 [ -f "$REQ" ]     || { echo "missing requirements-autodl.txt (dependency list) — incomplete upload?" >&2; exit 1; }
+[ -f uv.lock ]    || { echo "missing uv.lock — upload it with the training source" >&2; exit 1; }
 [ -d vendor/bam ] || { echo "missing vendor/bam (BAM actuator models, must be uploaded too)" >&2; exit 1; }
+printf -v EDITABLE_CMD 'uv pip install --python .venv/bin/python --index-url %q --no-deps -e .' "$MIRROR"
 
 # Parse the list: drop comments and blank lines.
 mapfile -t PKGS < <(sed 's/#.*//' "$REQ" | sed 's/[[:space:]]*$//' | grep -v '^[[:space:]]*$')
 
 if [ "$DO_LIST" = "1" ]; then
   echo
-  echo "will run, in order (index: $MIRROR):"
+  echo "selected task: $TASK"
+  echo "will install these packages in order, constrained by uv.lock (index: $MIRROR):"
   i=0
   for p in "${PKGS[@]}"; do
     i=$((i+1))
     printf '  %2d. uv pip install %s\n' "$i" "$p"
   done
   echo
-  echo "(the repo itself is NOT installed here — do it yourself: uv pip install --python .venv/bin/python --no-deps -e . )"
+  echo "then install the training package: $EDITABLE_CMD"
   exit 0
 fi
 
@@ -109,20 +109,29 @@ export UV_CACHE_DIR="${UV_CACHE_DIR:-$HOME/.cache/uv}"
 export UV_HTTP_TIMEOUT=600          # the 30 s default always dies on 2 GB CUDA wheels
 
 # --- uv ---
+# The uv wheel and the standalone installer both provide the uv binary.
 if ! command -v uv >/dev/null 2>&1; then
-  echo "==> installing uv"
+  echo "==> installing uv from the PyPI mirror ($MIRROR)"
+  if command -v pip >/dev/null 2>&1; then
+    pip install -i "$MIRROR" uv || true
+    export PATH="$HOME/.local/bin:$PATH"
+    hash -r
+  fi
+fi
+if ! command -v uv >/dev/null 2>&1; then
+  echo "==> mirror install missed uv; falling back to the official installer (GitHub)"
+  echo "    this requires access to astral.sh and its release downloads"
   curl -LsSf https://astral.sh/uv/install.sh | sh
   export PATH="$HOME/.local/bin:$PATH"
+  hash -r
 fi
-command -v uv >/dev/null 2>&1 || { echo "could not install uv: run 'source /etc/network_turbo' and retry" >&2; exit 1; }
+command -v uv >/dev/null 2>&1 || { echo "could not install uv. Try: pip install -i $MIRROR uv" >&2; exit 1; }
 echo "uv $(uv --version | awk '{print $2}')"
 
 # --- venv (Python 3.12; pyproject pins >=3.12,<3.13) ---
 echo
 echo "==> creating .venv (Python 3.12)"
-# Prefer a Python 3.12 that is already on the machine (AutoDL images ship one in
-# /root/miniconda3) over uv's managed build: the managed interpreter is fetched from
-# GitHub releases, which is blocked on some instances unless the academic proxy is on.
+# Prefer an existing Python 3.12 on PATH; otherwise uv can download its managed build.
 if [ -z "${UV_PYTHON_PREFERENCE:-}" ]; then
   for cand in python3.12 python3 python; do
     if command -v "$cand" >/dev/null 2>&1 && \
@@ -135,15 +144,18 @@ if [ -z "${UV_PYTHON_PREFERENCE:-}" ]; then
 fi
 if ! uv venv --python 3.12 --allow-existing .venv; then
   cat >&2 <<'HINT'
-uv venv failed. If it was trying to download a managed Python and GitHub is blocked:
-    export UV_PYTHON_INSTALL_DIR=<data-disk>/.microduck/uv-python
-    ( source /etc/network_turbo; uv python install 3.12 )   # proxy on for GitHub only
-    bash scripts/autodl_setup.sh                            # then rerun (proxy off, mirror is faster)
+uv could not create the Python 3.12 environment. Check the error above.
+If the interpreter download failed, make the Python release downloads reachable
+from this shell or add an existing Python 3.12 to PATH, then rerun the same command.
 HINT
   exit 1
 fi
 
-PIP=(uv pip install --python "$REPO_ROOT/.venv/bin/python" --index-url "$MIRROR")
+PYTHON="$REPO_ROOT/.venv/bin/python"
+CONSTRAINTS=$(mktemp)
+trap 'rm -f -- "$CONSTRAINTS"' EXIT
+uv export --frozen --no-dev --no-hashes --no-emit-local --format requirements.txt > "$CONSTRAINTS"
+PIP=(uv pip install --python "$PYTHON" --index-url "$MIRROR" --constraint "$CONSTRAINTS")
 
 # --- install one entry at a time ---
 TOTAL=${#PKGS[@]}
@@ -152,62 +164,81 @@ for p in "${PKGS[@]}"; do
   i=$((i+1))
   echo
   echo "=== [$i/$TOTAL] $p"
-  "${PIP[@]}" $p            # deliberately unquoted: entries may contain a space, e.g. "-e ./vendor/bam"
+  read -r -a args <<< "$p"   # The editable entry has two arguments: -e ./vendor/bam.
+  "${PIP[@]}" "${args[@]}"
 done
 
-# --- re-pin the versions that matter (anything written with ">=" may drift) ---
 echo
-echo "==> re-pinning core versions (mjlab's >= constraints can bump them)"
-"${PIP[@]}" torch==2.9.1 warp-lang==1.12.0 mujoco==3.10.0 mujoco-warp==3.8.1 mjlab==1.3.0
+echo "==> checking the simulation stack together against uv.lock"
+"${PIP[@]}" torch==2.9.1 warp-lang==1.12.0 mujoco==3.10.0 mujoco-warp==3.8.1 mjlab==1.3.0 wandb==0.24.0
 
 # --- sanity check: is the GPU visible? ---
 echo
 echo "==> sanity check"
-uv run --no-sync python - <<'PY'
+if ! "$PYTHON" - <<'PY'
+from importlib.metadata import distributions, version
+
+import mujoco
+import mjlab
+import onnxruntime
 import torch
+import warp
+
+core = next(distributions(name="mujoco-core"), None)
+if core is not None:
+    raise SystemExit(f"mujoco-core {core.version} shares native-library paths with the locked mujoco {mujoco.__version__}")
+
+print(f"mujoco {mujoco.__version__} | mjlab {version('mjlab')} | warp {warp.__version__} | onnxruntime {onnxruntime.__version__}")
 print(f"torch {torch.__version__} | CUDA {torch.version.cuda} | devices {torch.cuda.device_count()}")
 for i in range(torch.cuda.device_count()):
     p = torch.cuda.get_device_properties(i)
     print(f"  cuda:{i} {p.name} {p.total_memory/1024**3:.1f} GiB sm_{p.major}{p.minor}")
 if torch.cuda.device_count() == 0:
     print("  ! no GPU visible: check the driver (RTX 5090 needs CUDA 12.8+ / driver 570+) or the no-GPU mode")
-import warp, onnxruntime  # noqa: F401
-print(f"warp {warp.__version__} | onnxruntime {onnxruntime.__version__} | key imports OK")
 PY
+then
+  echo "Dependency check failed. If this .venv was used for another install, preserve it and rerun in a fresh environment:" >&2
+  echo '  mv -- .venv ".venv.before-repair-$(date +%Y%m%d_%H%M%S)"' >&2
+  printf '  bash scripts/autodl_setup.sh --index %q --task %q\n' "$MIRROR" "$TASK" >&2
+  exit 1
+fi
 
 # --- is the repo itself installed? (you install it; this only reminds and gates --train) ---
-REPO_INSTALLED=0
-if uv run --no-sync python -c "import mjlab_microduck" >/dev/null 2>&1; then
-  REPO_INSTALLED=1
-  if uv run --no-sync list-envs | grep -qx "$TASK"; then
-    echo "task registered OK: $TASK"
-  else
-    echo "! '$TASK' not in the registry (list them with: uv run --no-sync list-envs)"
-  fi
+HAS_PACKAGE=$("$PYTHON" -c 'from importlib.util import find_spec; print(int(find_spec("mjlab_microduck") is not None))')
+if [ "$HAS_PACKAGE" = 1 ]; then
+  "$PYTHON" - "$TASK" "$DO_TRAIN" <<'PY'
+import sys
+from importlib.metadata import entry_points
+
+from mjlab.tasks.registry import list_tasks
+
+# mjlab catches plugin import errors; surface the original traceback here.
+for plugin in entry_points(group="mjlab.tasks", name="mjlab_microduck"):
+    plugin.load()
+task = sys.argv[1]
+if task in list_tasks():
+    print(f"task registered OK: {task}")
+else:
+    print(f"{task} missing from the registry; check available tasks with uv run --no-sync list-envs", file=sys.stderr)
+    if sys.argv[2] == "1":
+        sys.exit(1)
+PY
 else
   echo
   echo "NOTE: the repo itself is not installed in the venv yet. Install it with:"
-  echo "    uv pip install --python .venv/bin/python --no-deps -e ."
+  echo "    $EDITABLE_CMD"
   echo "  (--no-deps matters: otherwise the PyPI copy of better-actuator-models overwrites vendor/bam)"
+  if [ "$DO_TRAIN" = "1" ]; then exit 1; fi
 fi
 
 # --- optional: launch training right away ---
 echo
 if [ "$DO_TRAIN" = "1" ]; then
-  if [ "$REPO_INSTALLED" != "1" ]; then
-    echo "the repo itself is not installed, so training cannot start. Run the 'uv pip install --no-deps -e .' above first." >&2
-    exit 1
-  fi
   STAMP="$(date +%Y%m%d_%H%M%S)"
   mkdir -p logs/autodl
   LOG="$REPO_ROOT/logs/autodl/${STAMP}_${TASK}.log"
-  ARGS=(train "$TASK" --env.scene.num-envs "$ENVS" --agent.run-name "autodl-$STAMP")
+  ARGS=(train "$TASK" --env.scene.num-envs "$ENVS" --agent.logger tensorboard --agent.seed 42 --agent.run-name "autodl-$STAMP")
   [ -n "$ITERS" ] && ARGS+=(--agent.max_iterations "$ITERS")
-  # No wandb credentials -> go offline, otherwise it blocks on the login prompt.
-  if [ -z "${WANDB_API_KEY:-}" ] && ! { [ -f "$HOME/.netrc" ] && grep -q api.wandb.ai "$HOME/.netrc"; }; then
-    export WANDB_MODE=offline
-    echo "wandb not logged in -> WANDB_MODE=offline (runs land in wandb/offline-run-*)"
-  fi
   # setsid detaches the run from this terminal (survives SSH disconnects) and gives it its
   # own process group, so "kill -- -PID" stops uv and the trainer together.
   setsid uv run --no-sync "${ARGS[@]}" > "$LOG" 2>&1 < /dev/null &
@@ -226,17 +257,17 @@ else
 done. next steps (keep --no-sync so uv does not re-install everything from uv.lock):
 
   # the repo itself (if not installed yet)
-  uv pip install --python .venv/bin/python --no-deps -e .
+  $EDITABLE_CMD
 
   # smoke test (1-2 min, always run this first)
-  uv run --no-sync train $TASK --env.scene.num-envs 64 --agent.max_iterations 5
+  uv run --no-sync train $TASK --env.scene.num-envs 64 --agent.max_iterations 5 --agent.logger tensorboard --agent.seed 42
 
   # full training
-  bash scripts/autodl_setup.sh --train --envs $ENVS
+  bash scripts/autodl_setup.sh --train --task "$TASK" --envs $ENVS
   # or in the foreground (activate the venv and --no-sync is no longer needed)
-  source .venv/bin/activate && train $TASK --env.scene.num-envs $ENVS --agent.run-name standup-r1
+  source .venv/bin/activate && train $TASK --env.scene.num-envs $ENVS --agent.logger tensorboard --agent.seed 42
 
   # variables to re-export in a fresh shell
-  export UV_CACHE_DIR=/root/autodl-tmp/.microduck/uv-cache UV_HTTP_TIMEOUT=600
 EOF
+  printf '  export UV_CACHE_DIR=%q UV_HTTP_TIMEOUT=%q\n' "$UV_CACHE_DIR" "$UV_HTTP_TIMEOUT"
 fi

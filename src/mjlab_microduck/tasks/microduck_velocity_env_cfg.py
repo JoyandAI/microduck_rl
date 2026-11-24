@@ -13,6 +13,52 @@ gait/feet terms, curriculum-ramped action-rate smoothing), with:
   - head_pose_tracking as a primary objective, plus an EMA-based head_pose_bias
     penalty that prices only the escapable DC head droop (see below)
   - body_pose tracking infra kept intact but DISABLED (weight 0) so the obs
+
+================================================================================
+OFFICIAL ALIGNMENT (2026-09-17) — read this before changing a default
+================================================================================
+The DEFAULT recipe below is now **functionally identical to the official
+upstream recipe** (``reference_official_velocity_env_cfg.py``, pollen-robotics
+origin/develop @ 3412ae5) with exactly two exceptions:
+
+  1. **BAM actuator + servo parameters** — deliberately ours (HD-1910-C001,
+     kp_fw=32, 7.5 V rail, m5 params, lag 4..7). They live in
+     ``robot/microduck_constants.py`` and are NOT part of this file.
+  2. **The head-stability block** (``ENABLE_HEAD_STABILITY``, default True) —
+     two terms the user asked for on 2026-09-17: a head-wobble tax and a
+     one-sided head-droop tax. Set ``MICRODUCK_HEAD_STABILITY=0`` to get the
+     byte-exact official recipe. ``tests/test_official_alignment.py`` proves
+     the equality with that switch off.
+
+WHY THE FLIP: **six switches covering twelve deviations were ON by default** —
+stance hygiene (7 reward terms), the pose reducer (`per_joint_posture`), the
+air-time progress gate, `heading_hold`, the widened `hip_roll` pose std (0.12),
+and the pose zero-command bucket (0.1). Each was added to patch a symptom of a
+previous policy, and every one of them was validated by comparing
+INDEPENDENTLY TRAINED runs whose within-arm seed spread exceeded the effect
+(AGENTS.md: "4 arms x 3 seeds could not separate any arm"). Several of the
+newer ones made things worse, not better — the ``hip_roll`` L1 arms drove
+zero-command survival 100 % -> 0 % (``logs/axis/THREE_AXIS_SUMMARY.txt``) and
+the newest such arm logged ``Episode_Termination/fell_over`` 25 -> 69 in its
+first iterations (``logs/w5_train.log``).
+
+Every deviation is still one environment variable away, so the A/B is not
+lost — only the DEFAULT is. The switches and their official values:
+
+  MICRODUCK_STANCE_HYGIENE=1    adds stance_hip_yaw / action_over_limit /
+                                neck_motion / standing_leg_vel /
+                                stillness_zero_cmd / no_stepping /
+                                yaw_hold_zero_cmd            (official: absent)
+  MICRODUCK_PER_JOINT_POSTURE=1 pose = mean_j(exp(-err^2/std^2)) instead of
+                                mjlab's exp(-mean_j(err^2/std^2))
+  MICRODUCK_AIR_TIME_GATE=1     air_time gated by actual progress (anti-march)
+  MICRODUCK_HEADING_HOLD=1      yaw-angle hold reward
+  MICRODUCK_HIP_ROLL_STD=0.12   the widened hip_roll pose tolerance
+  MICRODUCK_POSE_ZERO_CMD_PROB  explicit all-zero head/body command bucket
+  MICRODUCK_ABDUCTION=1         leg-abduction task-level tax
+  MICRODUCK_YAW_DC=1            net-yaw-rate tax
+  MICRODUCK_TURN_FIRST=1        turn-only command curriculum
+  MICRODUCK_SYMMETRY=1          mirror loss
     slot stays alive for envs that use it
 """
 
@@ -39,6 +85,20 @@ gait/feet terms, curriculum-ramped action-rate smoothing), with:
 # ============================================================
 
 import math
+import os as _os
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    """EXPERIMENT HOOK (2026-09-14 night queue).
+
+    Defaults reproduce the committed behaviour exactly; the env vars exist so one
+    checkout can run several A/B arms without editing source between runs. Every
+    run records its RESOLVED cfg in params/env.yaml, so results stay reproducible.
+    """
+    _v = _os.environ.get(name)
+    return default if _v is None or _v == "" else _v.strip().lower() in (
+        "1", "true", "yes", "on")
+
 from copy import deepcopy
 
 # 每个环境的步数 = 每迭代的 env steps 数(PPO roll-out 长度)。
@@ -56,7 +116,569 @@ TURN_IN_PLACE_FRACTION = 0.15
 
 # 对称性(左右镜像,参考 symmetry.py 的 61D 表)。
 # 默认关闭 —— 镜像损失只适用于对称任务(如匀速行走),对非对称任务禁止开。
-ENABLE_SYMMETRY = False
+#
+# 【2026-09-16 为什么现在要开】64 env × 5 seed 的直行矩阵(scripts/q1_straightness_matrix.sh)
+# 把"走歪"的机制定位到了**步态锁相的偏航不对称**:
+#   我们的策略  yaw DC = -12.1 deg/s,且与左/右脚单支撑相位锁定的分量 AC = -26.3 deg/s
+#              (即左半步与右半步的偏航冲量差 ≈ 26 deg/s),转弯半径 3.2 m ⇒ 绕圈;
+#   官方策略    yaw DC = -0.23 deg/s,转弯半径 ~12 m ⇒ 直走。
+# 注意:两份策略的 hip_yaw 都**不在**限位上(0.0% 时间)、双脚对扭转角 <1°
+# ⇒ 5V 时代那个"hip_yaw 顶死 + 整体扭转站姿"的旧缺陷在当前策略里已经不存在,
+# 剩下的就是纯粹的左右步态不对称。而奖励栈里**没有任何一项**为左右对称付钱:
+#   * heading_hold 是角度项(治"朝哪走"),不是对称项;
+#   * gait_symmetry_penalty 只罚**累计摆动时间**的失衡(见 mdp.py),对"两个半步
+#     偏航冲量不等"几乎不敏感;
+#   * ENABLE_SYMMETRY(镜像损失)从未开启过。
+# 所以这一项是唯一直接作用于"左右不对称"的机制。开启前必须先通过
+# tests/test_symmetry_table.py(61 维置换/符号表的逐项证明,含自逆、HOME 自镜像、
+# 与实际模型关节顺序一致)——表错一项就是整轮训练的静默错误梯度。
+# 【开关】MICRODUCK_SYMMETRY=0/1 显式覆盖,便于同一 checkout 跑 A/B;
+# 每个 run 目录的 git diff / params/env.yaml 仍会记录当次状态(本仓库溯源惯例)。
+ENABLE_SYMMETRY = _env_bool("MICRODUCK_SYMMETRY", False)
+
+# -------------------- 姿态卫生 / 执行器卫生(2026-09-11) --------------------
+# 【为什么需要这一组】2026-09-11 的步态取证(run 2026-09-10_18-43-53)发现
+# 走路策略的"奇怪姿势"不是训练不足,而是**奖励里根本没有给这些自由度定价**:
+#
+#   1. hip_yaw 被顶死在机械限位上:走路时 48% 的步子在限位处
+#      (左 +30.4° / 限位 +30°,右 +25.4° / 限位 +25°),站在原地时 100%;
+#      原始网络输出 |a| 高达 10.14(正常应 ≈1)。后果是双脚整体扭转约 28°
+#      (外八字),站姿变成"下蹲 + 前后劈叉 + 双脚内收 32 mm"的怪姿势。
+#   2. neck_pitch 被策略**主动**驱动成 ±15.7° 的 2.15 Hz 正弦(等于步频),
+#      头相对躯干点头 ±22.6°(峰峰值 76°)。注意:是**指令目标**在摆,
+#      关节只是以 66°(86 ms)滞后跟随 —— 所以这是策略的选择,不是舵机
+#      拉不动,也不是重力下垂。消融实验(把脖子动作冻结在 HOME)能彻底消除
+#      头摆,但躯干倾角从 2.6° 涨到 5.9° —— 说明它在拿 289 g 的头当
+#      **配重**(占整机 37%)。
+#
+# 【为什么奖励没管住】mjlab 的 pose 项是 exp(-mean_j(err_j²/std_j²)),
+# 走路时脚踝一项就 ~10.9 → 整项饱和在 0.0154/1.0(wandb 实测),
+# 占总奖励(≈106/步)的 **0.014%**。hip_yaw 偏 16° 摊到 10 个关节里
+# 只值 0.0087,再进 exp 基本等于 0。头摆的代价同样只有 ~0.17/步(0.16%)。
+# 两个缺陷都是"几乎免费"的,所以策略理性地选了它们。
+#
+# 【为什么用这几个函数】同仓库的 velocity_rollers 环境早就写过同一类修法
+# (见 microduck_velocity_rollers_env_cfg.py 的 action_over_limit /
+# hip_roll_neutral),而且 mdp.py 里的 joint_deviation_l1 /
+# joint_pos_limit_proximity / neck_joint_vel_l2 文档里**点名**了 hip_yaw /
+# hip_roll —— 只是从没接进走路环境。这里把它们接上,不新造轮子。
+#
+# ⚠️ 注意 rollers 环境的记录:"a qpos penalty stole that range and broke the gait"
+# —— qpos 侧限位惩罚会偷走关节可用行程。所以限位问题用**动作侧**惩罚
+# (action_over_limit_penalty),它只罚"命令远超限位",不罚"关节到达限位"。
+ENABLE_STANCE_HYGIENE = _env_bool("MICRODUCK_STANCE_HYGIENE", False)
+# ↑ DEFAULT IS NOW False = OFFICIAL. See the OFFICIAL ALIGNMENT block in the
+#   module docstring. Turning it back on restores the 2026-09-11 stance /
+#   actuator-hygiene taxes, which is what every run through 2026-09-17 used.
+#
+# ── 只带"零命令三件套"的窄开关（2026-09-21 的统一模型用）────────────────────
+# MICRODUCK_ZERO_CMD_TERMS=1 只注册 stillness_zero_cmd + no_stepping +
+# yaw_hold_zero_cmd（外加给它们爬坡的 zero_cmd_tax_weight 课程），**不带** stance
+# hygiene 里的姿态税（stance_hip_yaw / action_over_limit / neck_motion /
+# standing_leg_vel）。
+#
+# 为什么需要它（实测）：官方配方 + 头块 + flight 那一族会走也会站（60/64、站立
+# 0 resets、倾角 5.6°），但**站着时脚以 2.15 Hz 反复抬起 14.7 mm** —— 踏步。同速度
+# 对照（都走 ~0.115 m/s）：12 偏差 + flight 的 ours_flight_s42_r2 站立离地只有
+# 0.34 mm，差别就在这三项。原因很直接：零命令下 tracking 奖励只要求"不移动"，
+# 而**原地抬脚并不违反它**，所以踏步在官方配方里完全没有价格。
+# 这三项的 docstring 原文就是 "Discourages marching in place when the robot should
+# stand still"，而且都按 `cmd_speed < 0.01` 门控 —— 走路时恒为 0，
+# 对步态零影响（这是构造上的保证，不是经验判断）。
+ENABLE_ZERO_CMD_TERMS = _env_bool("MICRODUCK_ZERO_CMD_TERMS", False)
+
+# hip_yaw 回中(L1,梯度恒定)。L1 而不是高斯:高斯在 16° 处已经很平,
+# 而 L1 在任何偏差处都给同样的力。rollers 环境的调参经验:
+# "raise if still splayed, lower if it flattens the stride"。
+#
+# 【deadband = 0.10 rad(5.7°)的理由】2026-09-11 的原始动作取证:
+# hip_yaw 的**指令**是 +70°(左)/+35°(右),远超 +30°/+25° 的硬限位;
+# 而 hip_roll 的**指令**只有 +3.75°/−3.31°(外张),关节误差 <1°。
+# 所以 hip_yaw 是"故意摆出来的姿势"(绕垂直轴的重力矩恰好 0.000 N·m,
+# 不可能是重力下垂),可以放心收;hip_roll 那 3.5° 是策略有意为之但
+# 幅度小,而且该关节在负载下的可辨识静态下垂就有 ~12° —— 惩罚前 12°
+# 等于惩罚"逃不掉的部分",所以 hip_roll **不加 L1**,只把它的 pose std
+# 从 0.05 放宽到 0.12(别再要求做不到的事)。
+
+# ── 走路外八字（hip_roll 外张）的两个可切换修法（2026-09-16） ──────────────
+# 实测（scripts/compare_walk_angles.py，vx=0.2，seed 0，12 s，均值）：
+#   官方 alpha_walking     L-R hip_roll 偏 HOME = 0.054 rad（约 3°）
+#   我们 ck7000 / ck12000  L-R = 0.456 / 0.477 rad（约 26–27°），L+R ≈ 0
+#   ⇒ 是**镜像对称的"掰开"**，不是整体倾斜。
+# 根因（多 agent 审计，带 file:line）：唯一给 hip_roll 定价的项是 pose 高斯，
+# 而它的 std 在 2026-09-16 从 0.05 放宽到 0.12；**官方配方用的是 0.05**，原注释
+# 就是 "hold the 5-degree-inward stance (sole sits flat), stop leg splay"
+# (reference_official_velocity_env_cfg.py:225,234)。其余正则项对**静态偏置**全部
+# 失明：action_rate/body_ang_vel 是速率项（常数偏置代价恰为 0）、
+# dof_pos_limits 的软限位在 ±0.346 rad 之外（观测 |q| = 0.154）、
+# action_over_limit 要 |action| > 0.77（观测 0.24）。而 stance_hip_yaw 的关节
+# 选择器只匹配 hip_yaw，**看不见 hip_roll**。
+#
+# 两个开关彼此独立，便于归因：
+#   MICRODUCK_HIP_ROLL_STD=0.05   把 pose 的 hip_roll std 调回官方值
+#   MICRODUCK_STANCE_HIP_ROLL=1   额外挂一条 hip_roll 的 L1 回中（rollers 环境
+#                                 已用同一形状的项治过同一个病，权重 -2.0）
+HIP_ROLL_POSE_STD = float(_os.environ.get("MICRODUCK_HIP_ROLL_STD", "0.05"))
+# ↑ DEFAULT IS NOW 0.05 = OFFICIAL (was 0.12 from 2026-09-11). The 0.12 value
+#   was justified by a "12 deg static sag under load" that was later shown to be
+#   (a) calibrated on the RETIRED 5 V rail and (b) pointing INWARD while the
+#   observed splay points OUTWARD (docs/forensics/agent_A_reward_audit.md:88-90)
+#   — i.e. it was a widened target for a defect it did not explain, and
+#   tightening it back was never re-tested in a controlled way.
+ENABLE_STANCE_HIP_ROLL = _env_bool("MICRODUCK_STANCE_HIP_ROLL", False)
+STANCE_HIP_YAW_L1_WEIGHT = -0.8
+# The original 0.10 rad deadband was chosen for hip_yaw, whose historical
+# command overshoot was large.  It is too generous for the hip-roll residual:
+# the R3 L1 arm left one leg at -0.169 rad while the other sat inside this
+# deadband.  Keep the legacy default byte-for-byte equivalent, but allow the
+# focused R4 arm to test a smaller *hip-roll-only* tolerance without changing
+# the hip-yaw hygiene recipe.
+STANCE_HIP_ROLL_L1_DEADBAND = float(
+    _os.environ.get("MICRODUCK_STANCE_HIP_ROLL_DEADBAND", "0.10")
+)
+# 权重单独可覆盖。默认与 stance_hip_yaw 相同（-0.8）；想"加大惩罚"就调这个，
+# 而不要再去动 pose 的 std —— 后者已被实测证伪（外八 0.454 -> 0.583，更糟）。
+STANCE_HIP_ROLL_L1_WEIGHT = float(
+    _os.environ.get("MICRODUCK_STANCE_HIP_ROLL_WEIGHT", str(STANCE_HIP_YAW_L1_WEIGHT))
+)
+
+# ── 腿外展 abduction（任务层面，但**对称量**）—— 修"外八"的正确形状 ──────────
+# 【为什么是这个量，而不是 hip_roll、也不是脚间距】
+# 2026-09-17 用仓库自己的验收工具（`scripts/check_posture_acceptance.py`）
+# 对 ck7000 逐项判定，结果 15/17 通过，**只挂两条**：
+#     falls in 20 s            FAIL
+#     abduction [deg]  12.2    FAIL（官方 0.4，门槛 3.0）
+# 而 `foot sep (walk)` / `foot sep (stand)` / `toe_out` / `hip_yaw` 全部 PASS。
+#   ⇒ **外八的客观指纹是 abduction，不是脚间距。**
+# `gait_forensics.py:565-568` 的定义：
+#     abduction_deg = 0.5 * (left_hip_roll_dev - right_hip_roll_dev)
+#   = 两条腿**对称地一起外展**的量（正值=向外）。它对"整体倾斜"免疫
+#     （整体倾斜时两项同号、相减抵消），只保留"两条腿一起张开"。
+# 【为什么 L1 在这个量上安全，而 L1 在单条 hip_roll 上会毁掉站立】
+# 实测证伪过两次：单关节 hip_roll 的 L1（deadband 0.10 / 0.03）把 abduction
+# 压下去了，但**策略从膝（±0.43）和踝（±0.58）逃逸、塌成深蹲**，零命令存活
+# 100% → 0%、tilt 2° → 47°。
+# abduction 是**两条腿的对称组合**：要把它压到 0，只能让两条 hip_roll 同时回到
+# 标称 —— 单靠一条腿摆姿势无法抵消（因为减号在中间）。同时它**不比 hip_roll 更
+# 好逃逸**：膝/踝内收同样会改变 foot 位置，但 abduction 只看 hip_roll，所以
+# "深蹲"这条路对 abduction 是**无效的**（它不会降低 abduction），因此梯度会
+# 指向真正的腿构型，而不是把整机压扁。
+# 【门控】只在非零指令（走路）时收费。零命令站立时 ck7000 本来就略内收
+#   （abduction 接近 0），而站立是唯一还完好的行为，不该被收税。
+ENABLE_ABDUCTION = _env_bool("MICRODUCK_ABDUCTION", False)
+
+# ── 站距上限（2026-09-18，agent D 的处方②）───────────────────────────────────
+# 【要修的是什么】实测站距（两个独立工具方向一致）：
+#     官方 65 mm（`logs/queue_align/*_accept/walk.json`）/ 84 mm（agent D 探针）
+#     我们 ck7000 130 / 122 mm，align_fwd 131 / 133 mm
+#   ⇒ **我们的脚间距是官方的 1.6–2 倍**，这正是用户反复说的"腿像两侧迈开"。
+# 【为什么不用仓库里已有的 `feet_distance_penalty`】它罚的是 `clamp(min_dist − d)`
+#   ＝**脚太近**，方向是反的；而且它自己的 docstring 就写着在我们工作点上恒为 0
+#   （双脚 133 mm ≫ 78 mm 下限）⇒ 接上去**一点梯度都没有**。所以另写一个 max 版本。
+# 【为什么不是关节惩罚】单关节 hip_roll 的两次尝试都已证伪（收 pose std 更糟；
+#   L1 把外八压下去但站立存活 100%→0%）。**脚的位置是任务层面的量**：任何关节
+#   重排都改变不了"两脚相距 130 mm"这个事实 ⇒ 绕不过去。
+# 【默认关】要开必须显式打开；打开后按非零指令门控（站立不收费）。
+ENABLE_FEET_MAX_WIDTH = _env_bool("MICRODUCK_FEET_MAX_WIDTH", False)
+# ── 腾空相惩罚（2026-09-18，路线 A：对齐官方的"走"）─────────────────────────
+# 【实测依据（同一个检查点、只改指令速度，64 环境）】
+#     指令 0.05/0.10 → 离地 1–2 mm、每步偏航冲量 ±0.5、净偏航 2–3°（但**根本不动**）
+#     指令 0.20      → 离地 27.4 mm、冲量 **−31.5**、腾空 14%、净偏航 **114°**
+#   官方：离地 12.5 mm、触地占空比 0.585、**腾空 0.000**、前进 0.038 m/s（是"走"）
+# ⇒ **我们的策略没有"走"这个模式**：要么原地蹭、要么跑。跑的时候每步产生 14 倍大的
+#   偏航扰动，靠对消压到 2.8%（大而随机的残差 ⇒ 偏置符号乱翻）；官方靠**不产生扰动**。
+# 【为什么不是去调 air_time】已核实 `mjlab/.../rewards.py:209-238`：它奖励的是
+#   **摆动时长**落在 [0.125,0.30] s，不直接奖励腾空 —— 不腾空的走（官方摆动 ~0.24 s）
+#   拿到的分一样多。所以直接罚"两只脚同时离地"这个**任务层面的状态**才是对症的。
+# 【为什么绕不开】腾空是接触状态，任何关节重排都藏不住它（与站距项同理；与已被证伪的
+#   单关节 hip_roll 惩罚相反）。退化解"干脆不抬脚"由 foot_clearance(−2.0) 与
+#   foot_swing_height(−0.25, target 0.02) 定价 —— 这正是官方所在的那个平衡点。
+ENABLE_FLIGHT_PENALTY = _env_bool("MICRODUCK_FLIGHT_PENALTY", False)
+# ── 偏航率单独定价（去稀释）—— 2026-09-18，agent A 的 4.2× 发现 ──────────────
+# 【问题】官方那条 `track_angular_velocity` 是
+#     exp(−[(cmd_z−ω_z)² + ω_x² + ω_y²]/std²)
+# 把**未指令的 roll/pitch 角速度**和偏航误差放在同一个指数里。走路时 |ω_xy|≈0.87
+# rad/s、std²=0.5 ⇒ 整项（连带偏航梯度）被乘上 exp(−1.52)≈**0.22**，
+# 于是偏航通道实际只有权重的 ~1/4.4 的权威，一次完美转弯只值 +0.28–0.37/步。
+# 【修法】把**同一个误差**单独、不加稀释地定价一次。roll/pitch 的阻尼本来就是
+# `body_ang_vel` 的职责（它构造上排除 z），所以拆开不丢任何东西 ——
+# 这是给已有目标重新配权，不是新增税。
+ENABLE_YAW_Z_TRACK = _env_bool("MICRODUCK_YAW_Z_TRACK", False)
+YAW_Z_TRACK_WEIGHT = float(_os.environ.get("MICRODUCK_YAW_Z_TRACK_WEIGHT", "2.0"))
+YAW_Z_TRACK_STD = float(_os.environ.get("MICRODUCK_YAW_Z_TRACK_STD", str(math.sqrt(0.5))))
+
+# 【符号：**正**权重】`flight_penalty` 返回 ≤0（自我取负），配负权重会双重取负
+# ⇒ 变成"越爱飞越奖励"（AGENTS.md 记录过同类事故）。判据：日志里必须 ≤0。
+# 强度标定：ck7000 在 0.2 指令下腾空 14% ⇒ 权重 +2.0 时约 −0.28/步（总奖励 ~3.4）。
+FLIGHT_PENALTY_WEIGHT = float(_os.environ.get("MICRODUCK_FLIGHT_WEIGHT", "2.0"))
+FLIGHT_GRACE_STEPS = int(_os.environ.get("MICRODUCK_FLIGHT_GRACE_STEPS", "0"))
+
+# 0.100 m 起罚：官方 65–84 mm 在死区内，我们 122–133 mm 立即计费
+# （(0.130−0.100)=0.030 m/步 × 权重；权重 3.0 ⇒ −0.09/步，量级与其它税项相当）。
+FEET_MAX_WIDTH = float(_os.environ.get("MICRODUCK_FEET_MAX_WIDTH_M", "0.100"))
+# 【符号：必须是**正**权重】`feet_distance_max_penalty` 返回 ≤0（自我取负），
+# 配负权重会双重取负 ⇒ **变成"脚张得越开奖励越多"**（AGENTS.md 记录过同类事故：
+# 权重 −2.0 时 `Episode_Reward/abduction` 读到 +0.0042）。判据：日志里必须 ≤0。
+FEET_MAX_WIDTH_WEIGHT = float(_os.environ.get("MICRODUCK_FEET_MAX_WIDTH_WEIGHT", "3.0"))
+# 3° 起罚：与验收表 `abduction le 3.0` 同口径；官方 0.4°、ck7000 12.2°
+# ⇒ 现交付件立即计费（约 (12.2-3)/57.3 = 0.16 rad/步），梯度清晰可见。
+ABDUCTION_DEADBAND = float(_os.environ.get("MICRODUCK_ABDUCTION_DEADBAND", "0.052"))
+# **正权重**：`leg_abduction_penalty` 返回 <= 0（自我取负风格，与 stance_hip_yaw 同类），
+# 所以必须配正权重。给负权重会双重取负 ⇒ **变成"外展越多奖励越多"**
+# （实测：权重 -2.0 时 `Episode_Reward/abduction` 读到 **+0.0042**，正是 AGENTS.md
+#  那条"负权重配自我取负的惩罚 = 奖励违规"的翻版。判据：惩罚项必须 <= 0）。
+ABDUCTION_WEIGHT = float(_os.environ.get("MICRODUCK_ABDUCTION_WEIGHT", "2.0"))
+STANCE_HIP_YAW_L1_DEADBAND = 0.10
+
+# 命令远超硬限位的惩罚(动作侧,能随 ONNX 一起部署到真机)。
+# overshoot 0.3 rad 是给低 kp 舵机留的"够到限位"的余量,只罚野过头。
+# 【权重 -1.0 的来历】实测 raw 值跨 rollout 变化很大(0.06 ~ 1.01 rad):
+# 中位数为 0、只有 ~30% 的步非零,但尾部可以单步超限 9 rad。
+# -1.0 让"偶发野过头"值 0.06~1.0/秒(≈1~13% 总奖励),既不常驻收费,
+# 又能在策略真的把 hip_yaw 顶到限位外时形成实质压力。
+ACTION_OVER_LIMIT_WEIGHT = -1.0
+ACTION_OVER_LIMIT_OVERSHOOT = 0.3
+
+# 脖子"抽动"惩罚:只罚超过 deadband 的关节速度,慢速摆头(执行头部姿态命令
+# 需要的那部分)免费。deadband 2.0 rad/s ≈ 2.15 Hz 下 ±8.5° 的等效幅度
+# —— 正常行走时躯干只俯仰 ±2°,脖子不需要这么大的摆动。
+# 【权重 -0.08 的来历】deadband=2.0 时该 term 的实测 raw 值 = 7.49,
+# 即当前策略抽动脖子要付 7.49×0.08 ≈ 0.60/秒 ≈ 8% 的总奖励。
+# ⚠️ 参考量级:AGENTS.md 记载 run 5yay13u4 在**不可逃脱**的 0.77/步
+# 头税下直接放弃了迈步。本项是**可逃脱**的(不抽动就付 0),所以 0.60
+# 不会逼出"站着不动最优",但也不再是现在那 0.16% 的噪音级信号。
+NECK_MOTION_WEIGHT = -0.08
+NECK_MOTION_DEADBAND_RAD_S = 2.0
+
+# 这几个税项在 STANCE_TAX_RAMP_ITERS 迭代内线性爬坡(AGENTS.md:技能还在
+# 摸索时上税会让"什么都不做"变成最优解)。300 迭代时步态已经出现。
+STANCE_TAX_RAMP_ITERS = 300
+
+# 【最重要的一个开关】把 pose 项从"集体高斯"换成"逐关节高斯均值"。
+#
+#   原式(mjlab variable_posture): exp(-mean_j(err_j²/std_j²))   ← 会整体塌掉
+#   新式(mdp.per_joint_posture)  : mean_j(exp(-err_j²/std_j²))  ← 不会塌掉
+#
+# 【为什么要换 —— 2026-09-11 Agent B 的对照实验,同一套官方配方】
+#   official alpha_walking  : 站姿贴着 HOME          → pose 项 = 0.946
+#   本地 walk_hd1910_15000  : 深蹲(躯干 91 mm vs 官方 120 mm)→ pose 项 = 0.015
+#                                                         (站着时 0.0000)
+# 集体式把每个关节的误差先除以关节数再取 exp:走路时脚踝必然大幅摆动(实测
+# 偏离 HOME +44°/+48°),它一个人就把整项按到 0 —— 于是 hip_yaw / hip_roll
+# 的梯度也跟着一起死了。0.015 意味着"姿态"这一项在奖励里等于不存在,
+# 而 hip_yaw 就是在这里失守的(指令 +70° vs 限位 +30°,48% 的步子在限位上)。
+# 官方策略没掉进这个陷阱,所以对它来说集体式够用 —— 问题是一个**正反馈陷阱**,
+# 不是公式本身错。
+#
+# 逐关节均值让每个关节自己那一份梯度永远活着:本地站姿下光 hip_yaw 一项就还有
+# exp(-(0.28/0.3)²)=0.42,而不是被 1/10 稀释成 0。最优解不变(同样的 std,
+# 同样是"处处贴 HOME"),不引入新盆地,只是让信号不再死掉。
+#
+# 设 False 可一键回到官方原式做 A/B。
+ENABLE_PER_JOINT_POSTURE = _env_bool("MICRODUCK_PER_JOINT_POSTURE", False)
+# ↑ DEFAULT IS NOW False = OFFICIAL (mjlab's collective Gaussian). The swap to
+#   the per-joint mean was made to stop the collective form collapsing to
+#   ~0.015 when one joint (the ankle) travels far — a real effect, but it was
+#   never A/B-validated, and its own known cost is that a single far-travelling
+#   joint now only costs 1/N of the term (see docs/next_steps_2026-09-17.md §2.1).
+
+# 【原地踏步的修法 —— 开关】air_time(权重 3.0,全配方最大的正奖励)只按
+# **命令**门控,不按**实际速度**门控:
+#     cfg.rewards["air_time"].params["command_threshold"] = 0.01
+# 于是"命令非零"就够拿 3.0/步的抬脚奖励 —— **原地踏步是一条合法的刷分路径**。
+# 以前没人管是因为姿态没定价(策略没理由少迈腿);2026-09-11 把 pose 修活之后
+# (raw 0.011 → 0.49),"迈步但不前进"变成了一个有吸引力的中间盆地:
+# 实测 iter 3500 时 air_time 0.98 而 track_linear_velocity 只有 0.90/2.0。
+#
+# 同仓库的 rollers 环境早就踩到并修过这个洞(原文:
+# "otherwise a fast in-place flutter farmed this"),用 vel_gate_ref 把抬脚奖励
+# 按实际前进速度门控。这里把那套搬到走路任务上。
+#
+# 0.0 = 关闭(与环境当前行为**逐字节相同**,连函数都不会被换掉)。
+# >0  = 启用:按"沿命令方向的实际体速"门控;原地转命令改用实际偏航角速度门控。
+# 另有 gate_floor=0.25 保底 —— 见 mdp.feet_air_time_progress_gated 的说明:
+# 硬零会让"还不会走路"的策略连抬脚的动机一起丢掉(AGENTS.md 的死循环风险)。
+AIR_TIME_PROGRESS_GATE_V_REF = 0.15   # 2026-09-11 @4273 判定"原地踏步"后启用
+AIR_TIME_PROGRESS_GATE_TURN_REF = 0.3
+# DEFAULT IS NOW OFF = OFFICIAL stock feet_air_time. The env var still means
+# "1 = gate ON", so every historical launch command keeps its meaning; only the
+# default moved. (See the OFFICIAL ALIGNMENT block in the module docstring.)
+if not _env_bool("MICRODUCK_AIR_TIME_GATE", False):
+    # stock `feet_air_time` (official behaviour)
+    AIR_TIME_PROGRESS_GATE_V_REF = 0.0
+    AIR_TIME_PROGRESS_GATE_TURN_REF = 0.0
+AIR_TIME_PROGRESS_GATE_FLOOR = 0.25
+
+# 【零命令站定】权重(见下面 rewards 区 stillness_zero_cmd / no_stepping 的注释)。
+# stillness 是单调正奖励(站定 ≈ +0.8),no_stepping 罚脚离地(踏步 −0.4~−0.8)。
+# 两者都按命令门控,**对行走步态零影响**。
+STILLNESS_AT_ZERO_CMD_WEIGHT = 0.8
+NO_STEPPING_WEIGHT = -0.4
+
+# 【零命令定点航向】(2026-09-15) 站立时把航向钉在"停下那一刻"的朝向。
+# 为什么必须补：heading_hold 的乘性速度门(vel_gate_ref=0.15)在站立时把整项归零（刻意防刷分），
+# 于是**静止时没有任何项约束偏航** —— 实测 11999 迭代策略零命令 12 s 漂 −144°(≈12°/s)，
+# 而同策略 trunk 其它指标正常(tilt 2.9°、步频 0.083 Hz)。航向是主杠杆：night_queue 12 run
+# 统计 |yaw_bias| ↔ 20 s 净前进 r = −0.900 (r²=0.81)、↔ 路径效率 r = −0.781。
+# 角项(exp(−err²/std²))可回纠 + 角速度项给稠密梯度；门控用整条 twist 指令 ⇒ 命令一给即返回 0，
+# 对行走步态零影响。权重与零命令三件套一起由 stance_tax_weight 课程爬坡。
+YAW_HOLD_AT_ZERO_CMD_WEIGHT = 0.8       # 与 stillness_zero_cmd 同量级（两者都只在零命令下付钱）
+YAW_HOLD_AT_ZERO_CMD_STD = 0.6          # rad ≈ 34°
+YAW_HOLD_AT_ZERO_CMD_RATE_WEIGHT = 1.0  # 每 (rad/s) 扣多少（再乘外层权重）
+# 实测(scripts/probe_yaw_hold_term.py)：零命令站姿下该项非零、0.2 m/s 下严格为 0。
+# 训练层面的有效性（能否把 2°/s 的慢漂压掉）**尚未经训练验证** ——
+# 2026-09-15 那次 walk run 不含此项（它是"修前"基线），下一次 walk 训练才是它的验证。
+#
+# 【开关】MICRODUCK_YAW_HOLD_ZERO_CMD=0 关掉本项（默认开），用于做"有/无该项"的受控对照，
+# 不必改代码；run 目录里的 git diff 仍会记录当次状态（本仓库的溯源惯例）。
+if not _env_bool("MICRODUCK_YAW_HOLD_ZERO_CMD", True):
+    YAW_HOLD_AT_ZERO_CMD_WEIGHT = 0.0
+
+# 【零命令"踏步"的直接解药 —— 腿关节速度 L2】
+# 实测(2026-09-14/15):零命令下"腿关节速度平方和"把行为分得干干净净,而且**稠密**:
+#     踏步策略(3000~3500 迭代) 74.7~76.0   → 权重 -0.02 时罚 -1.49~-1.52/步
+#     walk_8250(基本站定)        24.8        → -0.50/步
+#     model_11999(完美站定)       0.008      → -0.0002/步(几乎免费)
+# 已接线的两项都不够稠密:stillness 只看**瞬时**躯干速度(每步只在过零点附近有值),
+# no_stepping 是二元脚触地事件。这一项给出与"腿动得多快"成正比的连续梯度。
+# 仅由命令门控(零命令才生效)⇒ 对走路步态零影响。
+STANDING_LEG_VEL_L2_WEIGHT = -0.02
+# 被推时的豁免阈值(m/s):用**平滑后**的躯干速度判断。推一下(0.3 m/s)能解锁
+# 恢复步,而步频级的躯干晃动(平滑后 ~0.03)解锁不了。
+STANDING_LEG_VEL_PUSH_EXEMPT = 0.2
+
+# -------------------- 直行保持 / 步态对称(2026-09-14) --------------------
+# 【为什么需要这一组 —— 走歪归因的结论】
+# 2026-09-14 的多 agent 取证(docs/forensics/走歪归因报告.md)定位到:
+# 整个奖励栈里**没有任何一项是"偏航角"的函数**。唯一与偏航有关的是
+# track_angular_velocity,它只对**角速度误差**计费,而且只占收益的 2.1%
+# (iter 11999 实测 raw +0.0357/1.0 → 合成角速度误差已达 1.291 rad/s,深在高斯尾部)。
+# 而 61 维观测里**没有航向、也没有机体线速度**,策略只能看到偏航"角速度"。
+# 后果:一个未被压住的偏航角速度会**开环积分**成越来越大的航向误差 ——
+# 实测直行命令下 20 秒净偏航 −103°±193°、路径效率 0.249(官方同条件 0.84)。
+#
+# 实测的缺陷形态:两个半步的偏航率是 +10.6 / −18.3 deg/s
+# (半步不对称 +28.9 deg/s),而整段直流偏置只有 −4 deg/s —— **AC/DC = 16.7×**,
+# 即漂移是约 6% 的**整流残差**。这种"步频锁相振荡 + 微小整流"正是
+# 速率高斯看不见的工况,所以必须改用**角度**项。
+#
+# 【为什么用角度项而不是偏航率惩罚】rollers 环境已经试过并回退了,原话在
+# microduck_velocity_rollers_env_cfg.py 里:"a yaw-RATE penalty froze the yaw
+# and made drift WORSE (tried and reverted)"。角度项是**可纠正**的:
+# 漂了就掉分,策略可以把 yaw 转回来补回分数。
+#
+# ⚠️ 本组修改**只动奖励**,不碰 61 维观测合同 ⇒ **运行时不需要改**,
+# 策略仍可与官方策略热插拔。
+ENABLE_HEADING_HOLD = _env_bool("MICRODUCK_HEADING_HOLD", False)
+# ↑ DEFAULT IS NOW False = OFFICIAL (the official recipe has no yaw-angle term
+#   at all; its straightness comes from the policy, not from a reward).
+#   Still one env var away — see the OFFICIAL ALIGNMENT block in the docstring.
+
+# 角度项权重。量级标定(参照 AGENTS.md"比较奖励质量而不是权重"):
+# 训练日志里单步净收益约 +3.4,本项满分 +2.5。
+#   37°(0.65 rad,当前策略的实际工作点)→ 损失 1.87/步
+#   17°(0.30 rad)                      → 损失 0.88/步
+# 对比现状:同样 1 rad 误差在 track_angular_velocity 下只值 0.04% —— 差数百倍。
+#
+# 【2026-09-14 调参依据 —— 权重和 std 是配套改的,别只改一个】
+# 上一轮 run(weight 1.5 / std 0.4)在 5500 次迭代里这一项的原始值**一直卡在
+# 0.07**(等效航向误差 37°),完全没改善,而同时 track_linear 从 0.51 涨到 0.93。
+# 说明策略在学,只是**这一项推不动**。原因算出来是**梯度形状**问题:
+#   高斯梯度 ∝ err·exp(−err²/std²),峰值在 err = std/√2 处
+#   std=0.4 rad(23°)⇒ 峰值在 **16°**,而策略实际在 **37°**
+#   ⇒ 在 37° 处 hold 只有 0.07,梯度只剩峰值的 **28%**
+# 所以把 std 放宽到 0.55 rad(31.5°)、权重提到 2.5:
+#   37° 处梯度 **0.16 → 0.48 /rad(3.0 倍)** —— 正好作用在策略所在的位置
+#   8° 处梯度 0.418 → 0.390(几乎不损失,不会牺牲将来的精度)
+#   该项占净收益的比例 ~4% → ~13%
+HEADING_HOLD_WEIGHT = 2.5
+HEADING_HOLD_STD = 0.55
+# 门控阈值(rad/s):只在"命令接近直行"时计费,避免和任务的转弯指令打架。
+# ang_vel_z 均匀采样 ∈ (−1,1) ⇒ 该阈值覆盖约 20% 的经验
+# (再加上 rel_forward_envs 给的那 20% 直行桶 —— 见 §"命令分布")。
+HEADING_HOLD_COMMAND_THRESHOLD = 0.2
+# 【速度门 —— 必须要有,否则会挖出"干脆站住"的坑】
+# 不加速度门时,"站着不动"完美保持航向 ⇒ 白拿满额奖励。按实测数字推演:
+#   站定 ≈ track_linear 1.34 + heading_hold 1.5 = 2.84
+#   歪着走 ≈ track_linear 1.63 + heading_hold ~0.2 = 1.83
+# 即加了这项之后"站住"反而**比"歪着走"分高** —— 对还不会走直线的策略来说,
+# 这是一个"停下就赢"的局部最优(AGENTS.md 明令禁止:正奖励不许落在可刷分的状态上)。
+# 修法沿用仓库自己的先例:feet_air_time_progress_gated 就是用 vel_gate_ref
+# 防"原地踏步刷分"(原文:"otherwise a fast in-place flutter farmed this")。
+# 乘性门:静止 → 0,达到参考速度 → 满额。当前策略实测 vx≈0.207 > 0.15 ⇒ 门全开,
+# 不会削弱它现在拿到的梯度。
+HEADING_HOLD_VEL_GATE_REF = 0.15
+# 【速度门的平滑时间常数与死区 —— 必须要有】
+# 门必须用"平滑后的带符号速度",不能用瞬时 |v|:实测(2026-09-14)用瞬时值时,
+# **原地踏步的策略把门顶开了 59.7%,而站定不动只有 40.3%** ——
+# 等于付钱让策略踏步(正反馈,策略会一直踏下去)。
+# 对幅值做平滑也没用(E|v| 对任何振荡都 >0),只有"先平滑带符号分量再取模"
+# 才能把振荡抵消掉。加死区后实测:静止 0~2%,真走路 99.9%。
+HEADING_HOLD_VEL_GATE_TAU = 1.0      # s，一阶低通时间常数
+HEADING_HOLD_VEL_GATE_DEADBAND = 0.05  # m/s，静止时躯干漂移的余量
+# 课程:先让步态出现,再引入本项(AGENTS.md:技能摸索期不能上新目标)。
+# 用 reward_weight 的分段阶跃(它不是插值,必须离散成台阶)。
+HEADING_HOLD_RAMP_ITER_START = 300
+HEADING_HOLD_RAMP_ITER_END = 1300
+
+# 左右步态对称性惩罚(**默认关闭**:本次"最优单改"先只上 heading_hold)。
+# 代码与接线都留好了,作为下一步独立的 A/B:
+#   打开只需把 ENABLE_GAIT_SYMMETRY 改 True,其余自动生效。
+#
+# 【为什么这次不开】
+#   1. 它是**代理指标**:罚的是"累计摆动时间不平衡",而真正的病因是净偏航力矩。
+#      heading_hold 直接给"结果"(航向被保持住)定价,策略可以自由选择
+#      "把步态改对称"或"反向补偿"来拿分 —— 不必规定它怎么做。
+#   2. 它**会和转弯命令打架**:转弯本来就需要不对称迈步,而本项无门控时会把
+#      合法的转弯当成缺陷来罚(rollers 环境没这个问题,因为它的 heading 命令
+#      是关掉的;走路环境的 |wz| 最大到 1.0,还有 15% 原地旋转桶)。
+#      要开的话必须先像 heading_hold 那样加一道偏航门控。
+#   3. 一次只改一件事,失败时才分得清是谁的责任。
+ENABLE_GAIT_SYMMETRY = False
+GAIT_SYMMETRY_WEIGHT = -0.5
+GAIT_SYMMETRY_RAMP_ITER_START = 500
+GAIT_SYMMETRY_RAMP_ITER_END = 1500
+
+# -------------------- 走路净偏航率(2026-09-16) --------------------
+# 【实测】64 env × 5 seed 的直行矩阵(scripts/q1_straightness_matrix.sh):
+#     官方 alpha_walking   yaw DC -0.23 deg/s,步态内摆动 AC -0.66 deg/s ⇒ 转弯半径 ~12 m
+#     我们 walk_hd1910_12000 yaw DC -12.08 deg/s,AC -26.28 deg/s   ⇒ 转弯半径 3.2 m
+# 一个周期内航向变化 = DC × T ⇒ 恒定 -12 deg/s 就是 30 秒转一整圈,这就是"最后会转圈"。
+# 5V 时代那个"hip_yaw 顶死限位 / 双脚整体扭转 28°"的旧缺陷在当前策略里**已不存在**
+# (贴限位 0.0% 时间、双脚对扭转 <1°),剩下的是一个**近似恒定**的偏航率偏置。
+#
+# 【估计量】y = EMA_tau(wz),tau≈0.8 s ≈ 两个步态周期 ⇒ 步频摆动被平均掉(衰减约 10 倍),
+# 恒定偏置几乎原样通过。实测信噪:偏置 12 deg/s vs 摆动泄漏 ~2 deg/s ⇒ 测的是偏置不是迈步。
+#
+# 【为什么不是 |wz|】rollers 环境试过裸的偏航率惩罚并回退("froze the yaw and made drift
+# WORSE")—— |wz| 会把每一次转向修正也一起罚掉。本项的关键差别是**对零均值摆动免疫**:
+# 步态需要的摆动一分钱不花,只有残余 DC 收费。且门控在**直线命令**上,转弯命令永不收费。
+#
+# 【与 heading_hold 的关系】heading_hold 是**角度**项(定价"最终朝哪"),允许把漂移纠回来,
+# 但它作用在一个**策略观测不到**的量上(61 维观测里没有航向),在工作点附近梯度很弱,
+# 而且它是"结果"不是"原因"。本项提供每步稠密、且因果直接的信号。两者互补,不是替代。
+# 【开关命名】本项是"净偏航率(时间平均)"惩罚,不是镜像损失 —— 镜像损失的开关是
+# ENABLE_SYMMETRY / MICRODUCK_SYMMETRY。历史上本项复用了 MICRODUCK_YAW_SYMMETRY
+# 这个名字,结果 2026-09-16 排组合臂时把两者搞混(冒烟里镜像损失没出现才发现)。
+# 现在首选名是 MICRODUCK_YAW_DC,旧名保留为兼容别名。
+ENABLE_YAW_SYMMETRY = _env_bool(
+    "MICRODUCK_YAW_DC", _env_bool("MICRODUCK_YAW_SYMMETRY", False))
+YAW_SYMMETRY_WEIGHT = 3.0            # 实测 |EMA(wz)| ≈ 0.21 rad/s ⇒ 约 -0.63/步(总奖励 ~3.4)
+YAW_SYMMETRY_TAU_S = 0.8             # ≈ 两个步态周期(步频 2.3 Hz)
+YAW_SYMMETRY_WZ_CMD_THRESHOLD = 0.15
+YAW_SYMMETRY_RAMP_ITERS = 300        # 技能摸索期不上税(AGENTS.md)
+
+# -------------------- 转向优先课程(2026-09-16) --------------------
+# 【要修的是什么】当前走路策略**不会转弯**:偏航指令 ±34 deg/s 只换来 <2% 的实际偏航率
+# 变化(原地时连符号都不对),而 track_angular_velocity(权重 2.0,参数与官方逐字相同)
+# 只拿到 0.119/1.0 —— 策略**白扔 23% 总奖励**也不转;官方策略同样指令能跟到 +18.5 deg/s。
+# ⇒ 不是"定价不够",是**这个步态盆地做不到**:它收敛成了一个固定碎步极限环,
+#   落足位置与偏航指令解耦。
+#
+# 【机制】按 AGENTS.md 自己的课程规则("每个阶段要和策略实际学会的东西对齐";
+# "罕见但重要的命令区域要显式分桶"):给转向一个"只要求转向"的阶段,让这个技能
+# 在**前进步态还没形成、无处可躲**的时候先被独立发现,再放开通前进指令。
+# 前进范围留一个**小而非零**的值(±0.05 而不是 0)——AGENTS.md:从不非零的命令输入
+# 会让输入神经元永久死掉。
+#
+# 阶段(env steps = iteration × 24):
+#   0        : lin ±0.05(仅供神经元存活), ang ±1.0  ⇒ 只练转
+#   1200     : lin_x ±0.20, lin_y ±0.15,     ang ±1.0  ⇒ 混入前进
+#   2500     : 完整范围(见下面的命令区常量)              ⇒ 恢复正常任务
+# 【开关】MICRODUCK_TURN_FIRST=1 启用(默认关,便于受控 A/B;run 目录 git diff 自证)。
+ENABLE_TURN_FIRST_CURRICULUM = _env_bool("MICRODUCK_TURN_FIRST", False)
+TURN_FIRST_STAGE1_ITERS = 1200
+TURN_FIRST_STAGE2_ITERS = 2500
+TURN_FIRST_TINY_LIN = 0.05           # 非零,保住输入神经元
+
+# 【部署对齐】head_pose / body_pose 的"精确零命令"概率。
+# 现状是 0.0 —— 连续均匀采样下 4 维同时精确为 0 的概率约 1e-4,
+# 而**部署时恰恰发的就是全零**("没有姿态请求")。AGENTS.md 明确记录过这个陷阱
+# ("Zero-command behavior must be explicitly trained: uniform sampling
+#  essentially never produces the all-zero command, which is exactly the
+#  deployment idle state")。给 10% 的显式零命令桶即可覆盖。
+# 只改采样分布,不改观测形状/范围 ⇒ 不破坏 61 维合同。
+POSE_ZERO_COMMAND_PROB = float(
+    _os.environ.get("MICRODUCK_POSE_ZERO_CMD_PROB", "0.0")
+)
+# ↑ DEFAULT IS NOW 0.0 = OFFICIAL. The 0.1 bucket was added because deployment
+#   sends the ALL-ZERO head/body command, which continuous uniform sampling
+#   essentially never produces (AGENTS.md). It is a real argument — but it is
+#   also a deviation, and it was never A/B-validated, so it is now opt-in.
+
+# -------------------- 头部稳定性 / 头下垂(2026-09-17,用户要求) --------------------
+# 【用户要求原文】"头要稳定，因为头的重量增加了，增加头乱动的惩罚，不能低头，
+#   低头的惩罚"。这是**官方配方之外唯一保留的一处增项**(见模块顶部的
+#   OFFICIAL ALIGNMENT 说明),用 MICRODUCK_HEAD_STABILITY=0 可以回到逐字节官方。
+#
+# 【头的重量:实测,不是估计】从 MJCF 直接读:
+#     jaw_soft 188.77 g + yaw_roll_motion 51.60 + neck 39.84 + neck_pitch 8.72
+#     = 288.93 g / 整机 779.24 g = **37.1%**;力臂 75.6 mm。
+#   注意一个必须记录的事实:**"头变重了"在当前模型里只成立 +9 g(+3.2%)** ——
+#   preswap(官方 XL330 时代)是 279.93 g,现在的 288.93 g 全部来自颈部链上
+#   那 3 个 HD-1910 舵机各 +3 g(整机 +42 g = 14 舵机 × 3 g)。
+#   头占整机的**比例其实从 38.0% 降到 37.1%**。
+#   ⇒ 头"重"是**绝对量**(37% 的整机质量挂在 75 mm 力臂上)这个理由,
+#     而不是"这次换舵机把头加重了"。惩罚仍然成立,但理由要写对。
+ENABLE_HEAD_STABILITY = _env_bool("MICRODUCK_HEAD_STABILITY", True)
+
+# 【头顶乱动】只罚超过 deadband 的颈部关节速度。deadband 的标定(实测):
+#   * 官方 alpha_walking:颈部步频幅度 0.75° ⇒ 峰值角速度 ≈0.18 rad/s ⇒ **免费**;
+#   * 我们的坏策略:16.4° @2.15 Hz ⇒ 峰值 ≈3.87 rad/s ⇒ 计费。
+#   deadband=2.0 rad/s 落在两者之间,所以它是"把坏步态拉回官方水平"的税,
+#   而不是"禁止头动"的税。执行 head_pose 命令所需的慢速摆头(2–5 s 重采样、
+#   峰值 1.7–3.5 rad/s 的短促段)只有一部分会越界,且这是**可逃脱**的。
+# 【权重 -0.08 的来历】deadband=2.0 时坏策略该项 raw ≈ 7.49 ⇒ 约 −0.60/s
+#   ≈ 8% 总奖励;官方质量的步态付 0。AGENTS.md 记录的不可逃脱头税是 0.77/步
+#   (run 5yay13u4 直接放弃迈步)—— 本项远低于它,且可逃脱。
+# 【为什么必须爬坡】AGENTS.md:技能还在摸索时上税会让"什么都不做"成为最优解。
+#   与官方 head_pose_bias 同一条时间线:600 迭代前为 0,1500 迭代到满权。
+HEAD_MOTION_WEIGHT = float(_os.environ.get("MICRODUCK_HEAD_MOTION_WEIGHT", "-0.08"))
+HEAD_MOTION_DEADBAND_RAD_S = float(
+    _os.environ.get("MICRODUCK_HEAD_MOTION_DEADBAND", "2.0")
+)
+
+# 【不能低头】单侧、相对命令的 pitch L1(见 mdp.head_droop_penalty 的长说明)。
+#   deadband=0.15 rad(8.6°):37% 质量的头在迈步中无法避免的摆动免费,
+#   持续的低头(实测坏策略 −1.934 rad)照常计费。
+# 【权重 2.0 的标定】坏策略脖子 −1.93 rad ⇒ 扣 (−1.93+0.15)×2.0 ≈ −3.6/步,
+#   远大于它从"折脖子"里能拿到的任何好处;官方姿态(−0.13 rad,在 deadband 内)
+#   付 0。注意它与官方 head_pose_bias(3.0,对称、含 yaw/roll、只罚 DC)不冲突:
+#   那项罚"平均偏差",本项罚"方向",两者一起把低头变成单向代价。
+HEAD_DROOP_WEIGHT = float(_os.environ.get("MICRODUCK_HEAD_DROOP_WEIGHT", "2.0"))
+HEAD_DROOP_DEADBAND = float(_os.environ.get("MICRODUCK_HEAD_DROOP_DEADBAND", "0.15"))
+# 【头要一直向前】yaw/roll 的 L1(双侧、相对 HOME、按命令门控)。
+# 【实测基线(2026-09-17,compare_walk_angles.py,1 env × seed 0 × 12 s,均值 ± std)】
+#                   走路 vx=0.2                站立 vx=0.0
+#   joint        官方          我们        官方          我们
+#   head_yaw   -0.014±0.045  -0.023±0.029  +0.018±0.023  -0.006±0.019
+#   head_roll  -0.024±0.032  +0.060±0.015  -0.035±0.004  **+0.119±0.004**
+# ⇒ 两条结论,都直接决定死区:
+#   ① 走路时**两台策略的头都朝着正前方**(1–3.5°,峰值 ≈ mean+2σ:yaw 0.104、
+#      roll 0.088)⇒ 死区必须 ≥0.10 才不会去税官方步态里不可避免的摆动;
+#   ② **站立时我们有一个真实缺陷:head_roll 偏 +0.119 rad = 6.8°**(官方 2°,
+#      std 只有 0.004 ⇒ 是稳定的静态偏斜,不是抖动)⇒ roll 死区取 0.10 就能
+#      把官方(峰值 0.088)放过去、同时给我们这个 6.8° 的歪头计费。
+#   AGENTS.md 的规矩:deadband 用实测的不可逃逸值,而不是拍脑袋 —— 上面这张表就是。
+# 【门控】命令(±1.40 rad 的 head_yaw 指令)非零时免费 —— 否则本项会和
+#   head_pose_tracking 抢同一个关节(仓库明令:同一关节不能被两个目标拉扯)。
+#   部署发的是全零命令 ⇒ 门恒开 ⇒ 真机上就是"一直向前"。
+#   要"连命令也不许转"(更严格的读法)就把 gate 设成 0.0。
+HEAD_FORWARD_WEIGHT = float(_os.environ.get("MICRODUCK_HEAD_FORWARD_WEIGHT", "2.0"))
+HEAD_FORWARD_DEADBAND_YAW = float(
+    _os.environ.get("MICRODUCK_HEAD_FORWARD_DEADBAND_YAW", "0.12")
+)
+HEAD_FORWARD_DEADBAND_ROLL = float(
+    _os.environ.get("MICRODUCK_HEAD_FORWARD_DEADBAND_ROLL", "0.10")
+)
+HEAD_FORWARD_COMMAND_GATE = float(
+    _os.environ.get("MICRODUCK_HEAD_FORWARD_CMD_GATE", "0.05")
+)
+
+# 与官方 head_pose_bias 的时间线一致(0 直到 600 迭代,1500 到满权)。
+HEAD_STABILITY_RAMP_ITER_START = 600
+HEAD_STABILITY_RAMP_ITER_MID = 1000
+HEAD_STABILITY_RAMP_ITER_END = 1500
 
 # -------------------- 域随机化(DR)总开关 --------------------
 # Domain randomization toggles
@@ -158,8 +780,10 @@ from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs.mdp import dr
 from mjlab.envs.mdp.actions import JointPositionActionCfg
 from mjlab.managers import (
+    MetricsTermCfg,
     CurriculumTermCfg,
     EventTermCfg,
+    MetricsTermCfg,
     ObservationTermCfg,
     RewardTermCfg,
     TerminationTermCfg,
@@ -312,18 +936,22 @@ def make_microduck_velocity_env_cfg(
     std_standing = {
         # Lower body — tighter to keep the robot in home pose when standing
         r".*hip_yaw.*": 0.1,
-        r".*hip_roll.*": 0.05,  # 0.1→0.06→0.05 — hold the 5°-inward stance (sole sits flat), stop leg splay
+        r".*hip_roll.*": HIP_ROLL_POSE_STD,  # 0.05 → 0.12 (2026-09-11): the identified static
+                                # sag of this joint under load is ~12 deg, so 0.05
+                                # (2.9 deg) asked for something the actuator cannot
+                                # hold and the Gaussian simply went flat.
         r".*hip_pitch.*": 0.15,
         r".*knee.*": 0.15,
         r".*ankle.*": 0.1,
     }
-    # 【中文解释】hip_roll 定为 0.05 是历史调参结果(0.1→0.06→0.05):
-    # 保持 5° 内八站姿(脚掌能完全贴平地面),阻止腿向外劈开。
+    # 【中文解释】hip_roll 从 0.05 放宽到 0.12:0.05 rad(2.9°)比舵机自身
+    # 在负载下的静态下垂(实测 ~12°)还小 —— 目标根本不可达,高斯就变平了,
+    # 等于没有梯度。正确的做法是给一个"够得着"的目标,而不是要求做不到的事。
 
     std_walking = {
         # Lower body
         r".*hip_yaw.*": 0.3,
-        r".*hip_roll.*": 0.05,  # 0.1→0.06→0.05 — hold the 5°-inward stance, stop the leg splay to vertical
+        r".*hip_roll.*": HIP_ROLL_POSE_STD,  # 0.05 → 0.12, same reason as std_standing above
         r".*hip_pitch.*": 0.4,
         r".*knee.*": 0.4,
         r".*ankle.*": 0.25, # was 0.15
@@ -458,6 +1086,141 @@ def make_microduck_velocity_env_cfg(
     cfg.rewards["pose"].params["walking_threshold"] = 0.01
     cfg.rewards["pose"].weight = 1.0
 
+    # Structural fix: swap the collective Gaussian for a per-joint mean so one
+    # far-travelling joint (the ankle, in a crouched gait) can no longer mute the
+    # posture gradient for every other joint. Same stds, same weight — only the
+    # reducer changes. See ENABLE_PER_JOINT_POSTURE above for the 0.946-vs-0.015
+    # evidence and mdp.per_joint_posture for the derivation.
+    if ENABLE_PER_JOINT_POSTURE:
+        cfg.rewards["pose"].func = microduck_mdp.per_joint_posture
+
+    # ----------------------------------------------------------
+    # === 姿态卫生 / 执行器卫生(2026-09-11,见文件顶部常量区)===
+    # 这一组是"畸形姿势"的直接解药。每一项都对应一个**实测**的缺陷,
+    # 权重由"缺陷代价占奖励的比例"反推(见顶部注释)。全部走课程爬坡。
+    # ----------------------------------------------------------
+    if ENABLE_STANCE_HYGIENE:
+        # hip_yaw / hip_roll 回中。注意只作用在这两个关节上 —— 不是所有
+        # 腿关节:hip_pitch/knee/ankle 在走路时**必须**大幅偏离 HOME,
+        # 把它们也 L1 回中会直接把步态压平(这也是 stock pose 项饱和的原因)。
+        cfg.rewards["stance_hip_yaw"] = RewardTermCfg(
+            func=microduck_mdp.joint_deviation_l1,
+            weight=0.0,  # ramped by the stance_tax_weight curriculum
+            params={
+                "deadband": STANCE_HIP_YAW_L1_DEADBAND,
+                "asset_cfg": SceneEntityCfg(
+                    "robot", joint_names=(r"^(?!passive_).*hip_yaw.*",)
+                ),
+            },
+        )
+
+        # hip_roll 的可选 L1 回中。默认关：2026-09-11 的判断是该关节负载下有
+        # ~12° 静态下垂，L1 会去税一个舵机逃不掉的部分。但 2026-09-16 的多 agent
+        # 审计指出：观测到的偏置是**向外**的，而静态下垂是**向内**的
+        # (docs/forensics/agent_A_reward_audit.md:88-90)，所以下垂解释不了外八；
+        # 且 12° 那个数是在**已退役的 5 V 轨**上标定的。rollers 环境用同一形状的
+        # 项治好了同一个病。开关独立，便于 A/B。
+        if ENABLE_STANCE_HIP_ROLL:
+            cfg.rewards["stance_hip_roll"] = RewardTermCfg(
+                func=microduck_mdp.joint_deviation_l1,
+                weight=0.0,  # ramped by the stance_tax_weight curriculum
+                params={
+                    "deadband": STANCE_HIP_ROLL_L1_DEADBAND,
+                    "asset_cfg": SceneEntityCfg(
+                        "robot", joint_names=(r"^(?!passive_).*hip_roll.*",)
+                    ),
+                },
+            )
+        # 动作侧限位越界惩罚。**为什么不是 qpos 侧**:rollers 环境的记录
+        # 明确写过 "a qpos penalty stole that range and broke the gait" ——
+        # qpos 惩罚会偷走低 kp 舵机"冲过目标再被限位挡住"所必需的行程。
+        # 动作侧只罚"命令远超限位 + overshoot",关节仍能到达整个可用范围,
+        # 而且因为约束的是策略输出,行为会被烘进 ONNX、能带到真机。
+        # 【顺带修掉的部署隐患】当前策略在 hip_yaw 上输出 |a|=10.14,
+        # 真机运行时会把目标算成 HOME+10 rad —— 这个惩罚让网络不再这么干。
+        cfg.rewards["action_over_limit"] = RewardTermCfg(
+            func=microduck_mdp.action_over_limit_penalty,
+            weight=0.0,  # ramped
+            params={
+                "action_name": "joint_pos",
+                "overshoot": ACTION_OVER_LIMIT_OVERSHOOT,
+            },
+        )
+        # 脖子"抽动"惩罚(带 deadband)。详见 mdp.neck_joint_vel_deadband_l2:
+        # 慢速摆头免费(执行 head_pose 命令需要),步频级的泵动收费。
+        cfg.rewards["neck_motion"] = RewardTermCfg(
+            func=microduck_mdp.neck_joint_vel_deadband_l2,
+            weight=0.0,  # ramped
+            params={"deadband": NECK_MOTION_DEADBAND_RAD_S},
+        )
+        # Direct cure for marching in place at zero command (see the constant's
+        # comment for the measured calibration).
+        cfg.rewards["standing_leg_vel"] = RewardTermCfg(
+            func=microduck_mdp.joint_vel_l2_when_standing,
+            weight=0.0,  # ramped
+            params={
+                "command_name": "twist",
+                "command_threshold": 0.01,
+                "body_vel_threshold": STANDING_LEG_VEL_PUSH_EXEMPT,
+            },
+        )
+
+    # ----------------------------------------------------------
+    # === 直行保持 / 步态对称(2026-09-14,见文件顶部常量区)===
+    # 见顶部注释:奖励栈里原本**没有任何一项是偏航角的函数**,而观测里又没有
+    # 航向 ⇒ 走歪既未被定价也无法闭环纠正。这一组补上"角度"这一项。
+    # ----------------------------------------------------------
+    if ENABLE_HEADING_HOLD:
+        # 唯一"偏航角"函数。用已有的 heading_hold_reward(rollers 已验证),
+        # 新加 command_name/command_threshold 门控:命令在转弯时该项返回 0
+        # (转弯本身既不加分也不扣分),只在命令接近直行时才把"保持航向"计费,
+        # 且参考航向在转弯期间持续刷新 —— 转弯结束的瞬间参考自动落在
+        # "直线段起点"的航向上,不需要边沿检测。
+        # 门控关闭返回 0 而不是 1:两者对梯度的作用完全相同,但常数 1.0 会给
+        # 正奖励栈注入约 +1.2/步的**无梯度**奖励,稀释其他所有项的相对影响
+        # (AGENTS.md:"比较奖励质量而不是权重")。仓库既有惯例也是返回 0。
+        cfg.rewards["heading_hold"] = RewardTermCfg(
+            func=microduck_mdp.heading_hold_reward,
+            weight=0.0,  # ramped by the heading_hold_weight curriculum
+            params={
+                "std": HEADING_HOLD_STD,
+                "asset_cfg": SceneEntityCfg("robot"),
+                "command_name": "twist",
+                "command_threshold": HEADING_HOLD_COMMAND_THRESHOLD,
+                # Multiplicative speed gate — see the constant's comment: without
+                # it a STATIONARY policy collects the full reward (it holds the
+                # heading perfectly), which would score higher than veering.
+                "vel_gate_ref": HEADING_HOLD_VEL_GATE_REF,
+                "vel_gate_tau": HEADING_HOLD_VEL_GATE_TAU,
+                "vel_gate_deadband": HEADING_HOLD_VEL_GATE_DEADBAND,
+            },
+        )
+
+    if ENABLE_GAIT_SYMMETRY:
+        # 累计摆动时间不平衡 |L−R|/(L+R)。真实步态里"此刻只有一只脚在摆"
+        # 是正常的,所以只罚**累计**不平衡。当前策略左右膝差 6.8°、踝差 6.6°
+        # (官方 <1°),这条腿的不对称就是净偏航力矩的来源。
+        cfg.rewards["gait_symmetry"] = RewardTermCfg(
+            func=microduck_mdp.gait_symmetry_penalty,
+            weight=0.0,  # ramped by the gait_symmetry_weight curriculum
+            params={"sensor_name": "feet_ground_contact"},
+        )
+
+    if ENABLE_YAW_SYMMETRY:
+        # 走路时的净偏航率(net yaw rate)惩罚 —— 返回 ≤0 ⇒ 权重取正。
+        # 门控:直线命令(|cmd_wz| ≤ 阈值)且确实在走(|cmd_xy| > 0.05)。
+        # 上线后必须校验 wandb Episode_Reward/yaw_dc ≤ 0(AGENTS.md 的符号规则)。
+        cfg.rewards["yaw_dc"] = RewardTermCfg(
+            func=microduck_mdp.yaw_dc_rate_penalty,
+            weight=0.0,  # ramped by the yaw_dc_weight curriculum
+            params={
+                "command_name":         "twist",
+                "wz_command_threshold": YAW_SYMMETRY_WZ_CMD_THRESHOLD,
+                "command_threshold":    0.05,
+                "tau_s":                YAW_SYMMETRY_TAU_S,
+            },
+        )
+
     # Body-specific reward configurations
     # 【直立体 upright】躯干(trunk_base)要保持直立的高斯奖励。
     cfg.rewards["upright"].params["asset_cfg"].body_names = ("trunk_base",)
@@ -482,6 +1245,61 @@ def make_microduck_velocity_env_cfg(
     # 【中文解释】把脚部相关奖励的作用对象限定到两只脚(site)。
     for reward_name in ["foot_clearance", "foot_slip"]:
         cfg.rewards[reward_name].params["asset_cfg"].site_names = site_names
+    # 【脚间距下限（任务层面）】见文件顶部 ENABLE_FEET_DISTANCE 的长注释。
+    # 默认关闭 ⇒ 不打开开关时配置与改动前**逐字节一致**（可用 tests/ 与 smoke 验证）。
+    # 打开后：走路时（非零指令）两脚横向间距不得小于 FEET_DISTANCE_MIN。
+    # 这是**唯一一个改在任务层面、单关节绕不过去**的外八处方
+    # （关节空间的两种形状都已被实测证伪，见顶部注释）。
+    if ENABLE_YAW_Z_TRACK:
+        cfg.rewards["track_angular_velocity_z"] = RewardTermCfg(
+            func=microduck_mdp.track_angular_velocity_z_only,
+            weight=YAW_Z_TRACK_WEIGHT,
+            params={
+                "std": YAW_Z_TRACK_STD,
+                "command_name": "twist",
+                "asset_cfg": SceneEntityCfg("robot"),
+            },
+        )
+
+    if ENABLE_FLIGHT_PENALTY:
+        # 返回 ≤0 ⇒ **正权重**（见常量区的符号说明）。
+        cfg.rewards["flight"] = RewardTermCfg(
+            func=microduck_mdp.flight_penalty,
+            weight=FLIGHT_PENALTY_WEIGHT,
+            params={
+                "sensor_name": "feet_ground_contact",
+                "command_name": "twist",
+                "command_threshold": 0.01,
+                "grace_steps": FLIGHT_GRACE_STEPS,
+            },
+        )
+
+    if ENABLE_FEET_MAX_WIDTH:
+        # 返回 ≤0 ⇒ **正权重**（见常量区的符号说明）。site_names 与
+        # foot_clearance/foot_slip 共用左右脚 site。
+        cfg.rewards["feet_max_width"] = RewardTermCfg(
+            func=microduck_mdp.feet_distance_max_penalty,
+            weight=FEET_MAX_WIDTH_WEIGHT,
+            params={
+                "max_dist": FEET_MAX_WIDTH,
+                "asset_cfg": SceneEntityCfg("robot", site_names=tuple(site_names)),
+                "command_name": "twist",
+                "command_threshold": 0.01,
+            },
+        )
+
+    if ENABLE_ABDUCTION:
+        cfg.rewards["abduction"] = RewardTermCfg(
+            func=microduck_mdp.leg_abduction_penalty,
+            weight=ABDUCTION_WEIGHT,
+            params={
+                "deadband": ABDUCTION_DEADBAND,
+                "asset_cfg": SceneEntityCfg("robot", joint_names=(r".*hip_roll.*",)),
+                "command_name": "twist",
+                "command_threshold": 0.01,
+            },
+        )
+
 
     # Body-specific configurations
     # 【机体角速度惩罚 body_ang_vel】只惩罚躯干,不惩罚头(头部摆动是
@@ -523,6 +1341,78 @@ def make_microduck_velocity_env_cfg(
     cfg.rewards["air_time"].params["command_threshold"] = 0.01
     cfg.rewards["air_time"].params["threshold_min"] = 0.125
     cfg.rewards["air_time"].params["threshold_max"] = 0.300
+
+    # Optional progress gate on air_time (see AIR_TIME_PROGRESS_GATE_V_REF at the
+    # top). While it is 0.0 the term keeps mjlab's function and the recipe is
+    # byte-identical to before; enabling it swaps in the gated version so that
+    # lifting the feet without moving the body stops paying full price.
+    if AIR_TIME_PROGRESS_GATE_V_REF > 0.0 or AIR_TIME_PROGRESS_GATE_TURN_REF > 0.0:
+        cfg.rewards["air_time"].func = microduck_mdp.feet_air_time_progress_gated
+        cfg.rewards["air_time"].params["vel_gate_ref"] = AIR_TIME_PROGRESS_GATE_V_REF
+        cfg.rewards["air_time"].params["turn_gate_ref"] = AIR_TIME_PROGRESS_GATE_TURN_REF
+        cfg.rewards["air_time"].params["gate_floor"] = AIR_TIME_PROGRESS_GATE_FLOOR
+
+    # ----------------------------------------------------------
+    # 【零命令 = 站定,不许原地踏步】(2026-09-11,用户明确要求)
+    # 需求原话:"我想要一个不踏步,按键盘走再走的模型" —— 不按键就站着不动,
+    # 按了键才走。
+    #
+    # 【为什么官方配方没这个】AGENTS.md 的原设计是:零命令站定靠
+    # standing_envs 课程(把 25% 的环境命令清零)去"自然学会",
+    # **刻意不加任何 stillness 项**。practice 上这确实常常够用 ——
+    # 昨天那个训完的模型在 vx=0 时确实是完全静止的(倾角 0.4°、零漂移)。
+    # 但它没有上界:一旦策略学到"踏步也能拿分",就没有任何东西把它拉回来。
+    #
+    # 【为什么这两个工具是现成的】mdp.py 里 `stillness_at_zero_command` 和
+    # `no_stepping_penalty` 就是为这件事写的(后者 docstring 原文:
+    # "Discourages marching in place when the robot should stand still"),
+    # 但 grep 全仓库:**从没接进任何 velocity 环境**。这次接上。
+    #
+    # ⚠️ 两个都按命令门控(cmd_speed < 0.01),所以**对行走步态零影响** ——
+    # 不存在"为了治站姿把走路练坏"的风险。
+    # 【为什么用"正奖励 + 惩罚"两条而不是只加惩罚】
+    #   * stillness 是单调递减的正奖励:动得越快越少分,**没有阈值可以跨过去
+    #     逃掉**(不像 gate 型惩罚能被"刚好卡在阈值下"利用),AGENTS.md 推荐
+    #     的形态;
+    #   * no_stepping 直接罚"脚离地"这个具体动作,是踏步的直接代价。
+    # 两者一起:站定 ≈ +0.8,踏步 ≈ −0.4 ~ −0.8,落差 ~1.2/步,足够翻盘。
+    #
+    # ⚠️ 【2026-09-17 对齐官方】这三项**只在 ENABLE_STANCE_HYGIENE 打开时注册**。
+    # 理由不是审美:它们的权重**由 stance_tax_weight 课程**爬坡,而那个课程本身
+    # 就在 ENABLE_STANCE_HYGIENE 块里 —— 关掉 hygiene 时权重永远停在 0.0,
+    # 注册它们等于在奖励管理器里挂三个恒为 0 的死项(还破坏与官方的逐项等价)。
+    if ENABLE_STANCE_HYGIENE or ENABLE_ZERO_CMD_TERMS:
+        cfg.rewards["stillness_zero_cmd"] = RewardTermCfg(
+            func=microduck_mdp.stillness_at_zero_command,
+            weight=0.0,  # ramped by the stance_tax_weight curriculum
+            params={
+                "command_name": "twist",
+                "command_threshold": 0.01,
+                "vel_std": 0.1,
+            },
+        )
+        cfg.rewards["no_stepping"] = RewardTermCfg(
+            func=microduck_mdp.no_stepping_penalty,
+            weight=0.0,  # ramped
+            params={
+                "sensor_name": "feet_ground_contact",
+                "command_name": "twist",
+                "command_threshold": 0.01,
+            },
+        )
+        # 【零命令定点航向】站定时按住"停下那一刻"的朝向（角项可回纠 + 角速度项稠密）。
+        # 门控是**整条 twist 指令**，所以走路时恒为 0 —— 与 heading_hold 不重叠、不打架。
+        cfg.rewards["yaw_hold_zero_cmd"] = RewardTermCfg(
+            func=microduck_mdp.yaw_hold_at_zero_command,
+            weight=0.0,  # ramped by the stance_tax_weight curriculum
+            params={
+                "command_name": "twist",
+                "command_threshold": 0.01,
+                "std": YAW_HOLD_AT_ZERO_CMD_STD,
+                "rate_weight": YAW_HOLD_AT_ZERO_CMD_RATE_WEIGHT,
+                "asset_cfg": SceneEntityCfg("robot"),
+            },
+        )
 
     # 【平滑类正则(注意都是负权重,模板 cost 返回 ≥0)】
     # body_ang_vel:惩罚躯干角速度(转头/翻滚)。对动态任务要放轻!
@@ -1004,6 +1894,21 @@ def make_microduck_velocity_env_cfg(
     command.ranges.lin_vel_x = (-0.4, 0.4)
     command.ranges.lin_vel_y = (-0.3, 0.3)
     command.ranges.ang_vel_z = (-1.0, 1.0)
+    # ── 命令速度上限（可选开关，2026-09-20）────────────────────────────────
+    # MICRODUCK_CMD_LIN_MAX=<m/s>：把 lin_vel_x 两侧钳到该值，lin_vel_y 按同一
+    # 比例缩放（保持方向分布形状），ang_vel_z 不动 —— 单一变量：只降线速度。
+    # 为什么需要它：冻结 ck7000 的速度扫描（logs/probe_speed/speed_vs_flight.tsv）
+    # 测到 0.10→0.20 m/s 之间有**相变**：每步偏航冲量 ×93、离地间隙 ×12、
+    # 20 s 净转角 2°→114°；而 <0.10 时策略根本不走。所以"把命令压在相变以下"
+    # 是一个从未在**正确配方族**（官方配方+头块）上试过的杠杆，也正是用户
+    # 2026-09-18 提的"是不是速度太快导致的"。默认 1.0 = 不缩放 ⇒ 官方对齐不变
+    # （tests/test_official_alignment.py 仍然通过）。
+    _CMD_LIN_SCALE = float(_os.environ.get("MICRODUCK_CMD_LIN_MAX", "0") or 0.0)
+    if _CMD_LIN_SCALE > 0.0:
+        _lo, _hi = command.ranges.lin_vel_x
+        _ratio = _CMD_LIN_SCALE / max(abs(_lo), abs(_hi))
+        command.ranges.lin_vel_x = (-_CMD_LIN_SCALE, _CMD_LIN_SCALE)
+        command.ranges.lin_vel_y = tuple(v * _ratio for v in command.ranges.lin_vel_y)
     command.viz.z_offset = 0.5
     # 【换成"只保留命令、没有扰动"的自定义命令类】VelocityCommandCommandOnlyCfg:
     # 不带 mjlab 模板的 speed_limits 噪声/扰动抽取,命令更"干净",
@@ -1034,6 +1939,7 @@ def make_microduck_velocity_env_cfg(
     #   * 范围由 head_pose_range 课程 5 级放大(5%→100%)。
     cfg.commands["head_pose"] = microduck_mdp.UniformPoseCommandCfg(
         resampling_time_range=HEAD_POSE_CMD_RESAMPLE_S,
+        zero_command_prob=POSE_ZERO_COMMAND_PROB,  # deployment sends all-zero
         ranges=(
             (-0.05, 0.05),    # neck_pitch
             (-0.05, 0.05),    # head_pitch
@@ -1052,6 +1958,7 @@ def make_microduck_velocity_env_cfg(
     # standup 环境(它提高权重、放大范围)。
     cfg.commands["body_pose"] = microduck_mdp.UniformPoseCommandCfg(
         resampling_time_range=BODY_POSE_CMD_RESAMPLE_S,
+        zero_command_prob=POSE_ZERO_COMMAND_PROB,  # deployment sends all-zero
         ranges=(
             (-0.005, 0.005),  # x (m)
             (-0.005, 0.005),  # y (m)
@@ -1077,6 +1984,39 @@ def make_microduck_velocity_env_cfg(
             func=mdp.generated_commands,
             params={"command_name": "body_pose"},
         )
+    # ----------------------------------------------------------
+    # === 诊断指标（**不是奖励**，不改变策略/观测/动力学）===
+    # 【为什么加】agent E（2026-09-18）：训练日志里**根本没有偏航 DC 这个量**，
+    # 只能靠隔一段时间花 GPU 跑一次 P64 抽检；而现成的代理量更糟 ——
+    # `Metrics/twist/error_vel_yaw` 被**步内偏航振荡**主导（稳态 3.3–4.0 rad/s
+    # vs 指令上界 1.0），且在 night_queue 四臂里把排序**弄反**（该值最低的臂
+    # 走直最差，rho = −0.32）。
+    # 【关键】看 `yaw_dc_abs`（每 env 取绝对值再平均）：**带符号的平均会互相抵消** ——
+    # 每个 env 的偏置符号是自发对称破缺（同一次训练 12 个走路检查点六正六负），
+    # 所以均值读到 ~0，而每条腿 20 s 仍漂 78–118°。绝对值不抵消，才是与官方的差距。
+    # 门控会把均值按"当前走直线的 env 比例"稀释（该比例由命令课程固定），
+    # 所以**跨臂比较必须同迭代比**。
+    cfg.metrics["yaw_dc_abs"] = MetricsTermCfg(
+        func=microduck_mdp.yaw_wander_metric,
+        params={
+            "command_name": "twist",
+            "wz_command_threshold": YAW_SYMMETRY_WZ_CMD_THRESHOLD,
+            "command_threshold": 0.05,
+            "tau_s": YAW_SYMMETRY_TAU_S,
+            "signed": False,
+        },
+    )
+    cfg.metrics["yaw_dc_signed"] = MetricsTermCfg(
+        func=microduck_mdp.yaw_wander_metric,
+        params={
+            "command_name": "twist",
+            "wz_command_threshold": YAW_SYMMETRY_WZ_CMD_THRESHOLD,
+            "command_threshold": 0.05,
+            "tau_s": YAW_SYMMETRY_TAU_S,
+            "signed": True,
+        },
+    )
+
 
     # === Pose tracking rewards ===
     # head_pose: primary objective in vel env — the whole point of the rewrite.
@@ -1142,6 +2082,41 @@ def make_microduck_velocity_env_cfg(
         weight=0.0,  # ramped by the head_pose_bias_weight curriculum below
         params={"command_name": "head_pose", "tau_s": 1.0},
     )
+    # ----------------------------------------------------------
+    # 【头部稳定性层】(2026-09-17,用户要求;官方配方之外的唯一增项)
+    # 见文件顶部 ENABLE_HEAD_STABILITY 的长注释与 mdp.head_droop_penalty。
+    # 两项**都从 0 权重起步**,由 head_stability_weight 课程按官方
+    # head_pose_bias 的同一条时间线爬上来(600 迭代前免费,1500 到满权)。
+    # ----------------------------------------------------------
+    if ENABLE_HEAD_STABILITY:
+        # 头"乱动":颈部关节速度超过 deadband 的部分,平方和。官方步态免费,
+        # 步频锁相的抽动计费。关节选择在 mdp 内部(脖子/头是 5..8 号关节)。
+        cfg.rewards["head_motion"] = RewardTermCfg(
+            func=microduck_mdp.neck_joint_vel_deadband_l2,
+            weight=0.0,  # ramped by the head_stability_weight curriculum
+            params={"deadband": HEAD_MOTION_DEADBAND_RAD_S},
+        )
+        # 头下垂:单侧、相对命令的 pitch L1(返回 ≤0 ⇒ **正权重**)。
+        cfg.rewards["head_droop"] = RewardTermCfg(
+            func=microduck_mdp.head_droop_penalty,
+            weight=0.0,  # ramped by the head_stability_weight curriculum
+            params={
+                "command_name": "head_pose",
+                "deadband": HEAD_DROOP_DEADBAND,
+            },
+        )
+        # 头要一直向前:yaw/roll 双侧 L1,按命令门控(命令要转头时免费)。
+        cfg.rewards["head_forward"] = RewardTermCfg(
+            func=microduck_mdp.head_forward_penalty,
+            weight=0.0,  # ramped by the head_forward_weight curriculum
+            params={
+                "command_name": "head_pose",
+                "deadband_yaw": HEAD_FORWARD_DEADBAND_YAW,
+                "deadband_roll": HEAD_FORWARD_DEADBAND_ROLL,
+                "command_gate": HEAD_FORWARD_COMMAND_GATE,
+            },
+        )
+
 
     # ----------------------------------------------------------
     # Terrain(地形):工厂参数 rough 决定平地 or 粗糙地形。
@@ -1356,6 +2331,190 @@ def make_microduck_velocity_env_cfg(
             ],
         },
     )
+    # 【课程 7b:头部稳定性权重】(2026-09-17)与 head_pose_bias **同一条时间线** ——
+    # 600 迭代前为 0,1500 迭代到满权。理由见文件顶部 ENABLE_HEAD_STABILITY。
+    # 用 reward_weight(阶跃函数)而不是 staged_reward_weight_ramp:两项的
+    # deadband 已经把"不可避免的部分"排除掉了,不需要再线性淡入,
+    # 而且与官方 head_pose_bias 的节奏保持一致更好归因。
+    if ENABLE_HEAD_STABILITY:
+        cfg.curriculum["head_stability_weight"] = CurriculumTermCfg(
+            func=microduck_mdp.reward_weight,
+            params={
+                "reward_name": "head_motion",
+                "weight_stages": [
+                    {"step": 0, "weight": 0.0},
+                    {"step": HEAD_STABILITY_RAMP_ITER_START * NUM_STEPS_PER_ENV,
+                     "weight": 0.25 * HEAD_MOTION_WEIGHT},
+                    {"step": HEAD_STABILITY_RAMP_ITER_MID * NUM_STEPS_PER_ENV,
+                     "weight": 0.50 * HEAD_MOTION_WEIGHT},
+                    {"step": HEAD_STABILITY_RAMP_ITER_END * NUM_STEPS_PER_ENV,
+                     "weight": HEAD_MOTION_WEIGHT},
+                ],
+            },
+        )
+        # head_droop 是**惩罚**(返回 ≤0 ⇒ 正权重),它没有理由等到 600 迭代 ——
+        # 但按 AGENTS.md,任何"在上税"都要等技能出现,所以同样分三段爬坡。
+        cfg.curriculum["head_droop_weight"] = CurriculumTermCfg(
+            func=microduck_mdp.reward_weight,
+            params={
+                "reward_name": "head_droop",
+                "weight_stages": [
+                    {"step": 0, "weight": 0.0},
+                    {"step": HEAD_STABILITY_RAMP_ITER_START * NUM_STEPS_PER_ENV,
+                     "weight": 0.25 * HEAD_DROOP_WEIGHT},
+                    {"step": HEAD_STABILITY_RAMP_ITER_MID * NUM_STEPS_PER_ENV,
+                     "weight": 0.50 * HEAD_DROOP_WEIGHT},
+                    {"step": HEAD_STABILITY_RAMP_ITER_END * NUM_STEPS_PER_ENV,
+                     "weight": HEAD_DROOP_WEIGHT},
+                ],
+            },
+        )
+        # 头要一直向前:同一时间线、同一形状。
+        cfg.curriculum["head_forward_weight"] = CurriculumTermCfg(
+            func=microduck_mdp.reward_weight,
+            params={
+                "reward_name": "head_forward",
+                "weight_stages": [
+                    {"step": 0, "weight": 0.0},
+                    {"step": HEAD_STABILITY_RAMP_ITER_START * NUM_STEPS_PER_ENV,
+                     "weight": 0.25 * HEAD_FORWARD_WEIGHT},
+                    {"step": HEAD_STABILITY_RAMP_ITER_MID * NUM_STEPS_PER_ENV,
+                     "weight": 0.50 * HEAD_FORWARD_WEIGHT},
+                    {"step": HEAD_STABILITY_RAMP_ITER_END * NUM_STEPS_PER_ENV,
+                     "weight": HEAD_FORWARD_WEIGHT},
+                ],
+            },
+        )
+
+
+    # Posture / actuator-hygiene taxes (2026-09-11) fade in over the first
+    # STANCE_TAX_RAMP_ITERS iterations. Held at 0 at step 0 so the gait is not
+    # taxed while it is still being discovered (AGENTS.md), then ramped
+    # linearly so there is no weight cliff for the policy to trip over.
+    # 【课程 8:姿态卫生税】0 → 目标权重,在 300 迭代内线性爬坡。
+    if ENABLE_STANCE_HYGIENE:
+        cfg.curriculum["stance_tax_weight"] = CurriculumTermCfg(
+            func=microduck_mdp.staged_reward_weight_ramp,
+            params={
+                "ramp_steps": STANCE_TAX_RAMP_ITERS * NUM_STEPS_PER_ENV,
+                "stages": [
+                    # 只在开关打开时才存在；staged_reward_weight_ramp 对不存在的
+                    # 项会报错，所以这里必须条件化。
+                    *([{"reward_name": "stance_hip_roll",
+                        "weight": STANCE_HIP_ROLL_L1_WEIGHT}]
+                      if ENABLE_STANCE_HIP_ROLL else []),
+                    {"reward_name": "stance_hip_yaw", "weight": STANCE_HIP_YAW_L1_WEIGHT},
+                    {"reward_name": "action_over_limit", "weight": ACTION_OVER_LIMIT_WEIGHT},
+                    {"reward_name": "neck_motion", "weight": NECK_MOTION_WEIGHT},
+                    {"reward_name": "standing_leg_vel",
+                     "weight": STANDING_LEG_VEL_L2_WEIGHT},
+                    {"reward_name": "stillness_zero_cmd",
+                     "weight": STILLNESS_AT_ZERO_CMD_WEIGHT},
+                    {"reward_name": "no_stepping", "weight": NO_STEPPING_WEIGHT},
+                    {"reward_name": "yaw_hold_zero_cmd",
+                     "weight": YAW_HOLD_AT_ZERO_CMD_WEIGHT},
+                ],
+            },
+        )
+
+    # 【课程:零命令三件套的爬坡】(2026-09-21 统一模型)只在 ZERO_CMD_TERMS 单开
+    # （= 不带 stance hygiene）时注册，避免和上面的 stance_tax_weight 撞名/撞项。
+    # 同样的理由：技能还在摸索时上税会让"什么都不做"成为最优解，所以 0 → 目标权重
+    # 在 STANCE_TAX_RAMP_ITERS 内线性爬坡。
+    if ENABLE_ZERO_CMD_TERMS and not ENABLE_STANCE_HYGIENE:
+        cfg.curriculum["zero_cmd_tax_weight"] = CurriculumTermCfg(
+            func=microduck_mdp.staged_reward_weight_ramp,
+            params={
+                "ramp_steps": STANCE_TAX_RAMP_ITERS * NUM_STEPS_PER_ENV,
+                "stages": [
+                    {"reward_name": "stillness_zero_cmd",
+                     "weight": STILLNESS_AT_ZERO_CMD_WEIGHT},
+                    {"reward_name": "no_stepping", "weight": NO_STEPPING_WEIGHT},
+                    {"reward_name": "yaw_hold_zero_cmd",
+                     "weight": YAW_HOLD_AT_ZERO_CMD_WEIGHT},
+                ],
+            },
+        )
+
+    # 【课程 9:直行保持】(2026-09-14)0 → HEADING_HOLD_WEIGHT,分两级台阶。
+    # 为什么不在 step 0 就给:本项是正奖励,而"站着不动"天然完美满足它。
+    # 虽然它和 track_linear_velocity 对冲后不会把策略推向静止,但在步态
+    # 还没出现的早期,满权重的航向项会削弱"迈步"的动机(AGENTS.md 的
+    # "技能还在摸索时上目标会让什么都不做变成最优解")。
+    # 用 reward_weight 的分段阶跃 —— 它是阶跃函数不是插值(AGENTS.md)。
+    if ENABLE_HEADING_HOLD:
+        cfg.curriculum["heading_hold_weight"] = CurriculumTermCfg(
+            func=microduck_mdp.reward_weight,
+            params={
+                "reward_name": "heading_hold",
+                # 4 级台阶而不是 2 级:reward_weight 是阶跃函数(不是插值),
+                # 2 级会在 iter 300 处产生 0 → 0.75 的悬崖。AGENTS.md 记录过
+                # "wandb 指标正好在课程边界处下台阶 = 课程节奏错了"。
+                "weight_stages": [
+                    {"step": 0, "weight": 0.0},
+                    {"step": HEADING_HOLD_RAMP_ITER_START * NUM_STEPS_PER_ENV,
+                     "weight": 0.23 * HEADING_HOLD_WEIGHT},
+                    {"step": int(0.47 * HEADING_HOLD_RAMP_ITER_END) * NUM_STEPS_PER_ENV,
+                     "weight": 0.50 * HEADING_HOLD_WEIGHT},
+                    {"step": int(0.73 * HEADING_HOLD_RAMP_ITER_END) * NUM_STEPS_PER_ENV,
+                     "weight": 0.77 * HEADING_HOLD_WEIGHT},
+                    {"step": HEADING_HOLD_RAMP_ITER_END * NUM_STEPS_PER_ENV,
+                     "weight": HEADING_HOLD_WEIGHT},
+                ],
+            },
+        )
+
+    # 【课程 10:步态对称】同上,晚一点引入(它属于"尝试税",早期上会让
+    # 策略连不对称的步态都不敢试 —— 而早期恰恰需要先迈出腿来)。
+    if ENABLE_GAIT_SYMMETRY:
+        cfg.curriculum["gait_symmetry_weight"] = CurriculumTermCfg(
+            func=microduck_mdp.reward_weight,
+            params={
+                "reward_name": "gait_symmetry",
+                "weight_stages": [
+                    {"step": 0, "weight": 0.0},
+                    {"step": GAIT_SYMMETRY_RAMP_ITER_START * NUM_STEPS_PER_ENV,
+                     "weight": 0.5 * GAIT_SYMMETRY_WEIGHT},
+                    {"step": GAIT_SYMMETRY_RAMP_ITER_END * NUM_STEPS_PER_ENV,
+                     "weight": GAIT_SYMMETRY_WEIGHT},
+                ],
+            },
+        )
+
+    # 【课程 11:净偏航率】(2026-09-16)0 → 目标权重,300 迭代线性爬坡。
+    # 与 stance_tax_weight 同样的理由:技能还在摸索时上税会让"什么都不做"成为最优解。
+    if ENABLE_YAW_SYMMETRY:
+        cfg.curriculum["yaw_dc_weight"] = CurriculumTermCfg(
+            func=microduck_mdp.staged_reward_weight_ramp,
+            params={
+                "ramp_steps": YAW_SYMMETRY_RAMP_ITERS * NUM_STEPS_PER_ENV,
+                "stages": [
+                    {"reward_name": "yaw_dc", "weight": YAW_SYMMETRY_WEIGHT},
+                ],
+            },
+        )
+
+    # 【课程 12:转向优先】(2026-09-16)见常量区注释。前 1200 迭代只发转弯指令,
+    # 让"用落足位置产生偏航"这个技能在没有前进步态可依赖时先长出来。
+    if ENABLE_TURN_FIRST_CURRICULUM:
+        cfg.curriculum["turn_first"] = CurriculumTermCfg(
+            func=microduck_mdp.velocity_command_range_curriculum,
+            params={
+                "command_name": "twist",
+                "stages": [
+                    {"step": 0,
+                     "lin_vel_x": (-TURN_FIRST_TINY_LIN, TURN_FIRST_TINY_LIN),
+                     "lin_vel_y": (-TURN_FIRST_TINY_LIN, TURN_FIRST_TINY_LIN),
+                     "ang_vel_z": (-1.0, 1.0)},
+                    {"step": TURN_FIRST_STAGE1_ITERS * NUM_STEPS_PER_ENV,
+                     "lin_vel_x": (-0.20, 0.20), "lin_vel_y": (-0.15, 0.15),
+                     "ang_vel_z": (-1.0, 1.0)},
+                    {"step": TURN_FIRST_STAGE2_ITERS * NUM_STEPS_PER_ENV,
+                     "lin_vel_x": (-0.40, 0.40), "lin_vel_y": (-0.30, 0.30),
+                     "ang_vel_z": (-1.0, 1.0)},
+                ],
+            },
+        )
 
     return cfg
 
@@ -1376,11 +2535,20 @@ MicroduckRlCfg = RslRlOnPolicyRunnerCfg(
         distribution_cfg={
             # 高斯分布动作(连续控制的标准选择)。
             "class_name": "GaussianDistribution",
-            "init_std": 0.5,  # was 1.0 (xl330); HLS 双限幅下大动作→饱和乱蹬→学不动 (2026-09-04 诊断)
-            # 【中文解释】初始探索标准差。从 1.0 降到 0.5(2026-09-04 诊断):
-            # 动作范围由 HLS 双限幅卡住,初始 1.0 的标准差产生的动作大部分
-            # 会打到饱和限位 → 输出全是"乱蹬" → 学不动。0.5 起步让早期
-            # 探索更接近有效动作区间。
+            "init_std": 1.0,  # ★ 官方值。2026-09-11 改回 1.0(见下方说明)
+            # 【中文解释】初始探索标准差。
+            # 2026-09-04 曾为 HLS 舵机降到 0.5(理由:HLS 的双限幅把大动作
+            # 卡死 → 初始 1.0 的标准差大部分打到饱和 → "乱蹬" → 学不动)。
+            # 2026-09-11 改回官方的 1.0,理由是**对齐官方**:
+            #   * `git diff -w origin/develop HEAD -- src/mjlab_microduck/tasks/`
+            #     显示这是我们相对官方**唯一**的功能性偏离(其余全是注释);
+            #   * 官方策略(init_std=1.0)在同一套配方下走出了完全正确的步态
+            #     (躯干 119.8 mm、外张 +0.37°、颈部摆动 0.75°),
+            #     而我们的 0.5 那一轮走进了深蹲/外八字/甩头的坏盆地;
+            #   * 0.5 的原始理由(HLS 双限幅)**已经随换舵机失效** ——
+            #     现在是 HD-1910,而且 `action_over_limit` 会惩罚野过头的目标。
+            # 探索不足 → 早期就收敛到一个"能拿分但难看"的局部最优,正是
+            # Agent C 观察到的"从 iter 2500 起 pose/头部跟踪就平了"。
             "std_type": "scalar",       # 所有动作共享一个标量标准差(简单、稳)
         },
     ),
@@ -1417,3 +2585,47 @@ MicroduckRlCfg = RslRlOnPolicyRunnerCfg(
     num_steps_per_env=24,               # 每迭代每环境采集 24 步(与上方 NUM_STEPS_PER_ENV 一致)
     max_iterations=50_000,              # 训练上限(预算参考:走路类任务 4000–6000 迭代)
 )
+
+
+def configure_openmd_locomotion(
+    cfg: ManagerBasedRlEnvCfg, *, final_weights: bool = False
+) -> None:
+    """Add OpenMD head stabilization and straight-walking diagnostics."""
+    for metric_name, signed in (("yaw_dc_abs", False), ("yaw_dc_signed", True)):
+        cfg.metrics[metric_name] = MetricsTermCfg(
+            func=microduck_mdp.yaw_wander_metric,
+            params={
+                "command_name": "twist",
+                "wz_command_threshold": 0.15,
+                "command_threshold": 0.05,
+                "tau_s": 0.8,
+                "signed": signed,
+            },
+        )
+
+    # A warm-started VelStand inherits the final walking stage at step zero.
+    stages = ((0, 1.0),) if final_weights else (
+        (0, 0.0), (600, 0.25), (1000, 0.5), (1500, 1.0)
+    )
+    for name, schedule, function, params, weight in (
+        ("head_motion", "head_stability_weight", microduck_mdp.neck_joint_vel_deadband_l2,
+         {"deadband": 2.0}, -0.08),
+        ("head_droop", "head_droop_weight", microduck_mdp.head_droop_penalty,
+         {"command_name": "head_pose", "deadband": 0.15}, 2.0),
+        ("head_forward", "head_forward_weight", microduck_mdp.head_forward_penalty,
+         {"command_name": "head_pose", "deadband_yaw": 0.12,
+          "deadband_roll": 0.10, "command_gate": 0.05}, 2.0),
+    ):
+        cfg.rewards[name] = RewardTermCfg(
+            func=function, weight=weight if final_weights else 0.0, params=params
+        )
+        cfg.curriculum[schedule] = CurriculumTermCfg(
+            func=microduck_mdp.reward_weight,
+            params={
+                "reward_name": name,
+                "weight_stages": [
+                    {"step": iteration * NUM_STEPS_PER_ENV, "weight": factor * weight}
+                    for iteration, factor in stages
+                ],
+            },
+        )

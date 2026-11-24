@@ -1,17 +1,18 @@
 {
+  "armature": 0.0017097364181867484,
+  "q_offset": 0.002561156403823192,
+  "command_delay": 0.002264398185013645,
+  "friction_base": 0.009118229662485343,
+  "load_friction_base": 0.15186332604536376,
+  "friction_viscous": 0.003328522927276026,
   "kt": 0.692,
   "R": 3.75,
-  "armature": 0.0017847726395552805,
-  "q_offset": -0.021302398178440457,
-  "friction_base": 0.012455829136208726,
-  "friction_viscous": 0.007106378118315907,
-  "load_friction_base": 0.17112072132949335,
   "error_gain": 0.163,
-  "kd": 121.38401225749745,
-  "max_velocity": 8.0282,
+  "kd": 0.5,
+  "max_velocity": 12.0423,
   "max_acceleration": 500.0,
   "max_current": 3.25,
-  "command_delay": 0.02787107147088119,
   "model": "m3",
-  "actuator": "hd1910"
+  "actuator": "hd1910",
+  "kd_source": "T5 阶跃扫频反解 (150g+15cm, kp=32): 过冲匹配 D_eff=0.0205@kd_fw=40 ⇒ kd≈0.50; 上升时间另给更强 D(不可信, 见 dterm_calibration.json)"
 }

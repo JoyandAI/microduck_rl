@@ -6,8 +6,7 @@ the duck forward. Simpler / more stable alternative to the alternating stride
 (`Mjlab-Velocity-Flat-MicroDuck-Rollers`), which does not transfer well to the real
 robot. The stride env is left untouched.
 
-Approach A (see docs/superpowers/specs/2026-07-23-swizzle-env-design.md): the base
-roller recipe NATURALLY converges to a swizzle, so we reuse the stride env wholesale
+The base roller recipe naturally converges to a swizzle, so we reuse the stride env
 (robot, 61D obs, command, full DR, curricula, sim2real — deploys identically with
 `--roller`) and only swap the reward recipe:
   - REMOVE the anti-swizzle / stride terms.

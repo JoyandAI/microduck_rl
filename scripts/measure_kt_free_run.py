@@ -64,6 +64,11 @@ def main() -> int:
     ap.add_argument("--amp-lsb", type=int, default=800,
                     help="斜坡半幅 [LSB]（会自动收缩到编码器范围内）")
     ap.add_argument("--limit-a", type=float, default=0.975, help="临时限流 [A]")
+    ap.add_argument("--kp", type=int, default=None,
+                    help="【空载测量必看】临时把位置环 Kp(reg50, SRAM) 改为该值, 结束恢复原值。"
+                         "空载 + 高电压时 Kp=32 会让控制环进极限环(duty 同腿内波动 ±70%%, 把斜率"
+                         "冲高到 ~0.84), 取 --kp 8 可得到干净的 ke(=kt)。P 项在匀速段只贡献常数"
+                         "偏置, 不影响斜率, 故降低 Kp 不改变测量口径。(2026-09-15 实测)")
     ap.add_argument("--out", default="hd1910_calibration/kt_freerun")
     args = ap.parse_args()
 
@@ -92,6 +97,12 @@ def main() -> int:
     write_regs(ser, pid, 44, [lim_lsb & 0xFF, (lim_lsb >> 8) & 0xFF])
 
     def cleanup():
+        # 恢复 Kp(reg50, SRAM) —— 若本次临时改过
+        try:
+            if args.kp is not None and kp_orig is not None:
+                write_regs(ser, pid, 50, [kp_orig & 0xFF])
+        except Exception:
+            pass
         for a, d in ((46, [0, 0]), (40, [0]), (44, [orig_limit & 0xFF, orig_limit >> 8])):
             try:
                 write_regs(ser, pid, a, d)
@@ -99,6 +110,13 @@ def main() -> int:
                 pass
 
     atexit.register(cleanup)
+
+    # 可选: 临时改写 Kp(reg50, SRAM) —— 空载+高压下抑制极限环
+    kp_orig = r16(50, 1)
+    if args.kp is not None:
+        write_regs(ser, pid, 50, [int(args.kp) & 0xFF])
+        time.sleep(0.2)
+        print(f"[i] 临时 Kp: reg50 {kp_orig} → {r16(50, 1)} (测量结束后恢复)")
 
     mode = r16(33, 2)
     mode_u = mode & 0xFF if mode is not None else None
@@ -192,6 +210,9 @@ def main() -> int:
     time.sleep(0.3)
     write_regs(ser, pid, 40, [0])
     write_regs(ser, pid, 46, [0, 0])
+    # 正常收尾也显式恢复 Kp(reg50) —— cleanup() 在这里被 unregister, 不会再跑
+    if args.kp is not None and kp_orig is not None:
+        write_regs(ser, pid, 50, [kp_orig & 0xFF])
     atexit.unregister(cleanup)
     write_regs(ser, pid, 44, [orig_limit & 0xFF, orig_limit >> 8])
 
