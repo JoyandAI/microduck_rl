@@ -438,7 +438,7 @@ def load_config(
     """
     bam_controllers = {}
     dof_to_bam_controller = {}
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         data = json.load(f)
         for key, value in data.items():
             dofs = value["dofs"]

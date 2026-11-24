@@ -976,3 +976,44 @@ MicroduckSitStandRlCfg = RslRlOnPolicyRunnerCfg(
     num_steps_per_env=24,
     max_iterations=15_000,
 )
+
+
+def configure_openmd_standing_support(cfg: ManagerBasedRlEnvCfg) -> None:
+    """Account for standing on the OpenMD head shell and loaded neck joints."""
+    head_ground = ContactSensorCfg(
+        name="head_ground_contact",
+        primary=ContactMatch(mode="body", pattern="bottom_head_shell", entity="robot"),
+        secondary=ContactMatch(mode="body", pattern="terrain"),
+        fields=("found", "force"),
+        reduce="netforce",
+        num_slots=1,
+    )
+    cfg.scene.sensors = (*cfg.scene.sensors, head_ground)
+    cfg.rewards["head_ground"] = RewardTermCfg(
+        func=microduck_mdp.posture_head_ground_penalty,
+        weight=0.0,
+        params={
+            "sensor_name": head_ground.name, "command_name": "twist", "ramp_eps": 0.02,
+            "force_threshold_n": 0.5, "use_normal_force": True,
+        },
+    )
+    cfg.rewards["neck_limit_proximity"] = RewardTermCfg(
+        func=microduck_mdp.joint_limit_proximity_standing,
+        weight=0.0,
+        params={
+            "command_name": "twist", "ramp_eps": 0.02, "margin": 0.2,
+            "asset_cfg": SceneEntityCfg(
+                "robot", joint_names=("neck_pitch", "head_pitch", "head_yaw", "head_roll")
+            ),
+        },
+    )
+    cfg.curriculum["head_ground_weight"] = CurriculumTermCfg(
+        func=microduck_mdp.staged_reward_weight_ramp,
+        params={
+            "ramp_steps": 300 * 24,
+            "stages": [
+                {"reward_name": "head_ground", "weight": 1.4},
+                {"reward_name": "neck_limit_proximity", "weight": -1.0},
+            ],
+        },
+    )

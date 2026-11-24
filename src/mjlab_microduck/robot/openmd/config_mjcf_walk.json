@@ -1,0 +1,9 @@
+{
+  "robot_name": "openmd",
+  "source_xml": "cad/openmd/ros_description/openmicroduck.xml",
+  "source_scene": "cad/openmd/ros_description/openmicroduck_flat_scene.xml",
+  "actuator_params": "vendor/bam/bam/params/hd1910/m6.json",
+  "output_filename": "robot_walk",
+  "collision": "feet",
+  "note": "Floor contact is the two soles only. Walking task Mjlab-Velocity-Flat-OpenMD."
+}

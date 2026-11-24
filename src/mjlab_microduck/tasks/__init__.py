@@ -75,6 +75,25 @@ from .microduck_roulade_env_cfg import (
     make_microduck_roulade_env_cfg,
     MicroduckRouladeRlCfg,
 )
+from .openmd_env_cfg import (
+    OpenMDBallKickLeftRlCfg,
+    OpenMDBallKickRlCfg,
+    OpenMDGroundPickRlCfg,
+    OpenMDRouladeRlCfg,
+    OpenMDSitStandRlCfg,
+    OpenMDStandRlCfg,
+    OpenMDVelStandRlCfg,
+    OpenMDWalkRlCfg,
+    make_openmd_ball_kick_env_cfg,
+    make_openmd_ground_pick_env_cfg,
+    make_openmd_roulade_env_cfg,
+    make_openmd_sitstand_env_cfg,
+    make_openmd_standup_env_cfg,
+    make_openmd_velocity_env_cfg,
+    make_openmd_velstand_backlash_env_cfg,
+    make_openmd_velstand_env_cfg,
+    make_openmd_walk_backlash_env_cfg,
+)
 from .backlash import make_backlash_variant
 
 # Standard velocity task
@@ -278,3 +297,117 @@ for _task_id, _make_cfg, _kw, _rl_cfg, _robot_cfg in _BACKLASH_TASKS:
         rl_cfg=_rl_cfg,
         runner_cls=MicroduckOnPolicyRunner,
     )
+
+
+# OpenMicroDuck with HD-1910 servos.
+register_mjlab_task(
+    task_id="Mjlab-StandUp-Flat-OpenMD",
+    env_cfg=make_openmd_standup_env_cfg(),
+    play_env_cfg=make_openmd_standup_env_cfg(play=True),
+    rl_cfg=OpenMDStandRlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)
+
+register_mjlab_task(
+    task_id="Mjlab-Velocity-Flat-OpenMD",
+    env_cfg=make_openmd_velocity_env_cfg(),
+    play_env_cfg=make_openmd_velocity_env_cfg(play=True),
+    rl_cfg=OpenMDWalkRlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)
+
+register_mjlab_task(
+    task_id="Mjlab-Velocity-Flat-Backlash-OpenMD",
+    env_cfg=make_openmd_walk_backlash_env_cfg(),
+    play_env_cfg=make_openmd_walk_backlash_env_cfg(play=True),
+    rl_cfg=OpenMDWalkRlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)
+
+register_mjlab_task(
+    task_id="Mjlab-VelStand-Flat-OpenMD",
+    env_cfg=make_openmd_velstand_env_cfg(),
+    play_env_cfg=make_openmd_velstand_env_cfg(play=True),
+    rl_cfg=OpenMDVelStandRlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)
+
+register_mjlab_task(
+    task_id="Mjlab-VelStand-Rough-OpenMD",
+    env_cfg=make_openmd_velstand_env_cfg(rough=True),
+    play_env_cfg=make_openmd_velstand_env_cfg(play=True, rough=True),
+    rl_cfg=OpenMDVelStandRlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)
+
+register_mjlab_task(
+    task_id="Mjlab-VelStand-Flat-Backlash-OpenMD",
+    env_cfg=make_openmd_velstand_backlash_env_cfg(),
+    play_env_cfg=make_openmd_velstand_backlash_env_cfg(play=True),
+    rl_cfg=OpenMDVelStandRlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)
+
+register_mjlab_task(
+    task_id="Mjlab-VelStand-Rough-Backlash-OpenMD",
+    env_cfg=make_openmd_velstand_backlash_env_cfg(rough=True),
+    play_env_cfg=make_openmd_velstand_backlash_env_cfg(play=True, rough=True),
+    rl_cfg=OpenMDVelStandRlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)
+
+register_mjlab_task(
+    task_id="Mjlab-BallKick-Flat-OpenMD-Right",
+    env_cfg=make_openmd_ball_kick_env_cfg(kick_foot="right"),
+    play_env_cfg=make_openmd_ball_kick_env_cfg(play=True, kick_foot="right"),
+    rl_cfg=OpenMDBallKickRlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)
+
+register_mjlab_task(
+    task_id="Mjlab-BallKick-Flat-OpenMD-Left",
+    env_cfg=make_openmd_ball_kick_env_cfg(kick_foot="left"),
+    play_env_cfg=make_openmd_ball_kick_env_cfg(play=True, kick_foot="left"),
+    rl_cfg=OpenMDBallKickLeftRlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)
+
+register_mjlab_task(
+    task_id="Mjlab-GroundPick-Flat-OpenMD",
+    env_cfg=make_openmd_ground_pick_env_cfg(),
+    play_env_cfg=make_openmd_ground_pick_env_cfg(play=True),
+    rl_cfg=OpenMDGroundPickRlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)
+
+register_mjlab_task(
+    task_id="Mjlab-GroundPick-Rough-OpenMD",
+    env_cfg=make_openmd_ground_pick_env_cfg(rough=True),
+    play_env_cfg=make_openmd_ground_pick_env_cfg(play=True, rough=True),
+    rl_cfg=OpenMDGroundPickRlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)
+
+register_mjlab_task(
+    task_id="Mjlab-SitStand-Flat-OpenMD",
+    env_cfg=make_openmd_sitstand_env_cfg(),
+    play_env_cfg=make_openmd_sitstand_env_cfg(play=True),
+    rl_cfg=OpenMDSitStandRlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)
+
+register_mjlab_task(
+    task_id="Mjlab-SitStand-Rough-OpenMD",
+    env_cfg=make_openmd_sitstand_env_cfg(rough=True),
+    play_env_cfg=make_openmd_sitstand_env_cfg(play=True, rough=True),
+    rl_cfg=OpenMDSitStandRlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)
+
+register_mjlab_task(
+    task_id="Mjlab-Roulade-Flat-OpenMD",
+    env_cfg=make_openmd_roulade_env_cfg(),
+    play_env_cfg=make_openmd_roulade_env_cfg(play=True),
+    rl_cfg=OpenMDRouladeRlCfg,
+    runner_cls=MicroduckOnPolicyRunner,
+)

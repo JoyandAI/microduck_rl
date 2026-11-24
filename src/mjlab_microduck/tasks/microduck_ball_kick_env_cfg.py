@@ -32,6 +32,7 @@ at the same relative strength.
 """
 
 import math
+from dataclasses import replace
 from copy import deepcopy
 
 # ── Kicking foot: "right" or "left" ───────────────────────────────────────────
@@ -658,4 +659,11 @@ MicroduckBallKickRlCfg = RslRlOnPolicyRunnerCfg(
     save_interval=250,
     num_steps_per_env=24,
     max_iterations=10_000,
+)
+
+
+MicroduckBallKickLeftRlCfg = replace(
+    MicroduckBallKickRlCfg,
+    experiment_name="ball_kick_left",
+    run_name="ball_kick_left",
 )

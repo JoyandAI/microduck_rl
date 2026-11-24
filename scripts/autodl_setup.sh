@@ -9,10 +9,10 @@
 #
 #  Usage (repo already uploaded to the instance):
 #      cd /root/autodl-tmp/microduck_rl
-#      bash scripts/autodl_setup.sh                # install (Tsinghua PyPI mirror by default)
+#      bash scripts/autodl_setup.sh                # install (uv + deps from the image pip mirror)
 #      bash scripts/autodl_setup.sh --upstream     # use upstream PyPI (mirror missing packages)
 #      bash scripts/autodl_setup.sh --list         # print the plan, install nothing
-#      bash scripts/autodl_setup.sh --train        # install, then launch standup training in background
+#      bash scripts/autodl_setup.sh --train --task Mjlab-StandUp-Flat-OpenMD
 #
 #  Target environment: Ubuntu + NVIDIA driver, RTX 5090 (Blackwell sm_120):
 #    - torch 2.9.1 PyPI x86_64 wheel bundles CUDA 12.8 runtime and carries sm_120
@@ -109,12 +109,26 @@ export UV_CACHE_DIR="${UV_CACHE_DIR:-$HOME/.cache/uv}"
 export UV_HTTP_TIMEOUT=600          # the 30 s default always dies on 2 GB CUDA wheels
 
 # --- uv ---
+# The official installer pulls a GitHub release (releases.astral.sh). That link
+# resets from AutoDL. The PyPI package is the same binary, and this image's
+# pip.conf already points at a domestic mirror (Aliyun on current instances).
 if ! command -v uv >/dev/null 2>&1; then
-  echo "==> installing uv"
+  echo "==> installing uv from the PyPI mirror ($MIRROR)"
+  if command -v pip >/dev/null 2>&1; then
+    pip install -i "$MIRROR" uv || true
+    export PATH="$HOME/.local/bin:$PATH"
+    hash -r
+  fi
+fi
+if ! command -v uv >/dev/null 2>&1; then
+  echo "==> mirror install missed uv; falling back to the official installer (GitHub)"
+  echo "    if the download resets: Ctrl-C, run 'source /etc/network_turbo', retry this"
+  echo "    script once, then open a new shell (proxy off) before the dependency install"
   curl -LsSf https://astral.sh/uv/install.sh | sh
   export PATH="$HOME/.local/bin:$PATH"
+  hash -r
 fi
-command -v uv >/dev/null 2>&1 || { echo "could not install uv: run 'source /etc/network_turbo' and retry" >&2; exit 1; }
+command -v uv >/dev/null 2>&1 || { echo "could not install uv. Try: pip install -i $MIRROR uv" >&2; exit 1; }
 echo "uv $(uv --version | awk '{print $2}')"
 
 # --- venv (Python 3.12; pyproject pins >=3.12,<3.13) ---
@@ -158,7 +172,8 @@ done
 # --- re-pin the versions that matter (anything written with ">=" may drift) ---
 echo
 echo "==> re-pinning core versions (mjlab's >= constraints can bump them)"
-"${PIP[@]}" torch==2.9.1 warp-lang==1.12.0 mujoco==3.10.0 mujoco-warp==3.8.1 mjlab==1.3.0
+# wandb last: mjlab only asks for >=0.22.3, so an earlier install would float upward.
+"${PIP[@]}" torch==2.9.1 warp-lang==1.12.0 mujoco==3.10.0 mujoco-warp==3.8.1 mjlab==1.3.0 wandb==0.24.0
 
 # --- sanity check: is the GPU visible? ---
 echo
@@ -176,10 +191,10 @@ print(f"warp {warp.__version__} | onnxruntime {onnxruntime.__version__} | key im
 PY
 
 # --- is the repo itself installed? (you install it; this only reminds and gates --train) ---
-REPO_INSTALLED=0
+TASK_REGISTERED=0
 if uv run --no-sync python -c "import mjlab_microduck" >/dev/null 2>&1; then
-  REPO_INSTALLED=1
-  if uv run --no-sync list-envs | grep -qx "$TASK"; then
+  if uv run --no-sync python -c 'import sys; from mjlab.tasks.registry import list_tasks; sys.exit(sys.argv[1] not in list_tasks())' "$TASK"; then
+    TASK_REGISTERED=1
     echo "task registered OK: $TASK"
   else
     echo "! '$TASK' not in the registry (list them with: uv run --no-sync list-envs)"
@@ -194,20 +209,15 @@ fi
 # --- optional: launch training right away ---
 echo
 if [ "$DO_TRAIN" = "1" ]; then
-  if [ "$REPO_INSTALLED" != "1" ]; then
-    echo "the repo itself is not installed, so training cannot start. Run the 'uv pip install --no-deps -e .' above first." >&2
+  if [ "$TASK_REGISTERED" != "1" ]; then
+    echo "the selected task is unavailable. Install the repo and check its task registration before training." >&2
     exit 1
   fi
   STAMP="$(date +%Y%m%d_%H%M%S)"
   mkdir -p logs/autodl
   LOG="$REPO_ROOT/logs/autodl/${STAMP}_${TASK}.log"
-  ARGS=(train "$TASK" --env.scene.num-envs "$ENVS" --agent.run-name "autodl-$STAMP")
+  ARGS=(train "$TASK" --env.scene.num-envs "$ENVS" --agent.logger tensorboard --agent.seed 42 --agent.run-name "autodl-$STAMP")
   [ -n "$ITERS" ] && ARGS+=(--agent.max_iterations "$ITERS")
-  # No wandb credentials -> go offline, otherwise it blocks on the login prompt.
-  if [ -z "${WANDB_API_KEY:-}" ] && ! { [ -f "$HOME/.netrc" ] && grep -q api.wandb.ai "$HOME/.netrc"; }; then
-    export WANDB_MODE=offline
-    echo "wandb not logged in -> WANDB_MODE=offline (runs land in wandb/offline-run-*)"
-  fi
   # setsid detaches the run from this terminal (survives SSH disconnects) and gives it its
   # own process group, so "kill -- -PID" stops uv and the trainer together.
   setsid uv run --no-sync "${ARGS[@]}" > "$LOG" 2>&1 < /dev/null &
@@ -229,12 +239,12 @@ done. next steps (keep --no-sync so uv does not re-install everything from uv.lo
   uv pip install --python .venv/bin/python --no-deps -e .
 
   # smoke test (1-2 min, always run this first)
-  uv run --no-sync train $TASK --env.scene.num-envs 64 --agent.max_iterations 5
+  uv run --no-sync train $TASK --env.scene.num-envs 64 --agent.max_iterations 5 --agent.logger tensorboard --agent.seed 42
 
   # full training
-  bash scripts/autodl_setup.sh --train --envs $ENVS
+  bash scripts/autodl_setup.sh --train --task "$TASK" --envs $ENVS
   # or in the foreground (activate the venv and --no-sync is no longer needed)
-  source .venv/bin/activate && train $TASK --env.scene.num-envs $ENVS --agent.run-name standup-r1
+  source .venv/bin/activate && train $TASK --env.scene.num-envs $ENVS --agent.logger tensorboard --agent.seed 42
 
   # variables to re-export in a fresh shell
   export UV_CACHE_DIR=/root/autodl-tmp/.microduck/uv-cache UV_HTTP_TIMEOUT=600

@@ -3581,6 +3581,21 @@ def wheel_friction_curriculum(
     return torch.tensor([current_ranges[0]])
 
 
+def staged_reward_weight_ramp(
+    env: ManagerBasedRlEnv,
+    env_ids: torch.Tensor,
+    stages: list[dict],
+    ramp_steps: int,
+) -> torch.Tensor:
+    """Linearly ramp each named reward from zero to its target weight."""
+    del env_ids
+    t = min(1.0, max(0.0, env.common_step_counter / max(float(ramp_steps), 1.0)))
+    for stage in stages:
+        term_cfg = env.reward_manager.get_term_cfg(stage["reward_name"])
+        term_cfg.weight = float(stage["weight"]) * t
+    return torch.tensor(t, device=env.device)
+
+
 def reward_weight(
     env: ManagerBasedRlEnv,
     env_ids: torch.Tensor,
@@ -4004,6 +4019,19 @@ def stillness_at_zero_command(
     stillness = torch.exp(-body_vel ** 2 / vel_std ** 2)
 
     return is_standing_cmd * stillness
+
+
+def neck_joint_vel_deadband_l2(
+    env: ManagerBasedRlEnv,
+    deadband: float = 2.0,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """Squared neck and head servo speed beyond the free-motion band."""
+    asset: Entity = env.scene[asset_cfg.name]
+    neck_joint_indices = list(range(5, 9))
+    joint_vel = _servo_joint_vel(env, asset)[:, neck_joint_indices]
+    excess = (torch.abs(joint_vel) - deadband).clip(min=0.0)
+    return torch.sum(torch.square(excess), dim=1)
 
 
 def joint_vel_l2_when_standing(
@@ -5074,6 +5102,33 @@ def gait_symmetry_penalty(
     return torch.abs(L - R) / (L + R + 1e-3)
 
 
+def yaw_wander_metric(
+    env: ManagerBasedRlEnv,
+    command_name: str = "twist",
+    wz_command_threshold: float = 0.15,
+    command_threshold: float = 0.05,
+    tau_s: float = 0.8,
+    signed: bool = False,
+) -> torch.Tensor:
+    """Signed or absolute low-pass yaw rate during commanded straight walking."""
+    wz = torch.nan_to_num(env.scene["robot"].data.root_link_ang_vel_b[:, 2], nan=0.0)
+
+    if not hasattr(env, "_yaw_wander_ema") or env._yaw_wander_ema.shape[0] != env.num_envs:
+        env._yaw_wander_ema = torch.zeros(env.num_envs, device=env.device)
+    fresh = env.episode_length_buf <= 1
+    env._yaw_wander_ema[fresh] = 0.0
+    alpha = min(1.0, float(env.step_dt) / max(tau_s, 1e-6))
+    env._yaw_wander_ema = (1.0 - alpha) * env._yaw_wander_ema + alpha * wz
+
+    value = env._yaw_wander_ema if signed else env._yaw_wander_ema.abs()
+    cmd = env.command_manager.get_command(command_name)
+    if cmd is None:
+        return value
+    straight = (cmd[:, 2].abs() <= wz_command_threshold).float()
+    walking = (torch.linalg.norm(cmd[:, :2], dim=-1) > command_threshold).float()
+    return value * straight * walking
+
+
 def heading_hold_reward(
     env: ManagerBasedRlEnv,
     std: float = 0.4,
@@ -5328,6 +5383,22 @@ def zero_command_padding(
     return torch.zeros(env.num_envs, dim, device=env.device)
 
 
+def _ensure_head_pose_id_cache(env: ManagerBasedRlEnv, asset: Entity) -> None:
+    """Resolve neck and head encoders, including their passive backlash joints."""
+    if hasattr(env, "_head_pose_bl_ids"):
+        return
+    ids, names = asset.find_joints_by_actuator_names(_NECK_JOINT_PATTERNS)
+    env._head_pose_neck_ids = torch.tensor(ids, device=env.device, dtype=torch.long)
+    name_to_id = {n: i for i, n in enumerate(asset.joint_names)}
+    bl = [name_to_id.get(f"passive_{n}_backlash") for n in names]
+    env._head_pose_bl_ids = torch.tensor(
+        [0 if b is None else b for b in bl], device=env.device, dtype=torch.long
+    )
+    env._head_pose_bl_mask = torch.tensor(
+        [0.0 if b is None else 1.0 for b in bl], device=env.device
+    )
+
+
 def head_pose_tracking(
     env: ManagerBasedRlEnv,
     command_name: str = "head_pose",
@@ -5367,17 +5438,7 @@ def head_pose_tracking(
     asset: Entity = env.scene[asset_cfg.name]
     cmd = env.command_manager.get_command(command_name)  # (N, 4)
 
-    if not hasattr(env, "_head_pose_neck_ids"):
-        ids, names = asset.find_joints_by_actuator_names(_NECK_JOINT_PATTERNS)
-        env._head_pose_neck_ids = torch.tensor(ids, device=env.device, dtype=torch.long)
-        name_to_id = {n: i for i, n in enumerate(asset.joint_names)}
-        bl = [name_to_id.get(f"passive_{n}_backlash") for n in names]
-        env._head_pose_bl_ids = torch.tensor(
-            [0 if b is None else b for b in bl], device=env.device, dtype=torch.long
-        )
-        env._head_pose_bl_mask = torch.tensor(
-            [0.0 if b is None else 1.0 for b in bl], device=env.device
-        )
+    _ensure_head_pose_id_cache(env, asset)
 
     neck_ids = env._head_pose_neck_ids
     joint_pos = asset.data.joint_pos
@@ -5429,6 +5490,56 @@ def foot_air_time_safe(env: ManagerBasedRlEnv, sensor_name: str) -> torch.Tensor
     return _finite(_velocity_obs.foot_air_time(env, sensor_name))
 
 
+def head_droop_penalty(
+    env: ManagerBasedRlEnv,
+    command_name: str = "head_pose",
+    deadband: float = 0.15,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """Penalize downward pitch beyond the commanded neck and head deadband."""
+    asset: Entity = env.scene[asset_cfg.name]
+    _ensure_head_pose_id_cache(env, asset)
+
+    neck_ids = env._head_pose_neck_ids[:2]
+    bl_ids = env._head_pose_bl_ids[:2]
+    bl_mask = env._head_pose_bl_mask[:2]
+    joint_pos = torch.nan_to_num(asset.data.joint_pos, nan=0.0)
+    measured = joint_pos[:, neck_ids] + joint_pos[:, bl_ids] * bl_mask
+    actual = measured - asset.data.default_joint_pos[:, neck_ids]
+    cmd = env.command_manager.get_command(command_name)[:, :2]
+    droop = torch.clamp(cmd - actual - deadband, min=0.0)
+    return -droop.sum(dim=-1)
+
+
+def head_forward_penalty(
+    env: ManagerBasedRlEnv,
+    command_name: str = "head_pose",
+    deadband_yaw: float = 0.12,
+    deadband_roll: float = 0.10,
+    command_gate: float = 0.05,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """Penalize yaw and roll offsets when those head axes are near zero command."""
+    asset: Entity = env.scene[asset_cfg.name]
+    _ensure_head_pose_id_cache(env, asset)
+
+    neck_ids = env._head_pose_neck_ids
+    joint_pos = torch.nan_to_num(asset.data.joint_pos, nan=0.0)
+    measured = (
+        joint_pos[:, neck_ids]
+        + joint_pos[:, env._head_pose_bl_ids] * env._head_pose_bl_mask
+    )
+    actual = measured - asset.data.default_joint_pos[:, neck_ids]
+    cmd = env.command_manager.get_command(command_name)
+
+    excess_yaw = torch.clamp(actual[:, 2].abs() - deadband_yaw, min=0.0)
+    excess_roll = torch.clamp(actual[:, 3].abs() - deadband_roll, min=0.0)
+    if command_gate > 0.0:
+        excess_yaw = excess_yaw * (cmd[:, 2].abs() < command_gate).float()
+        excess_roll = excess_roll * (cmd[:, 3].abs() < command_gate).float()
+    return -(excess_yaw + excess_roll)
+
+
 def head_pose_bias_penalty(
     env: ManagerBasedRlEnv,
     command_name: str = "head_pose",
@@ -5471,9 +5582,7 @@ def head_pose_bias_penalty(
     asset: Entity = env.scene[asset_cfg.name]
     cmd = env.command_manager.get_command(command_name)  # (N, 4)
 
-    if not hasattr(env, "_head_pose_neck_ids"):
-        # Share the id cache with head_pose_tracking (either may run first).
-        head_pose_tracking(env, command_name=command_name, asset_cfg=asset_cfg)
+    _ensure_head_pose_id_cache(env, asset)
 
     neck_ids = env._head_pose_neck_ids
     joint_pos = asset.data.joint_pos
@@ -6751,6 +6860,60 @@ def posture_stillness(
     return torch.exp(-((v / vel_std) ** 2)) * z_gate * tilt_gate * ramp_done
 
 
+def _stand_ramp_gate(
+    env: ManagerBasedRlEnv,
+    command_name: str,
+    ramp_eps: float,
+) -> torch.Tensor:
+    """Select standing episodes whose posture transition has settled."""
+    cmd = env.command_manager.get_command(command_name)[:, 0]
+    term = env.command_manager.get_term(command_name)
+    alpha = getattr(term, "alpha", None)
+    flag = (cmd > 0.5).float()
+    if alpha is None:
+        ramp_done = torch.ones_like(flag)
+    else:
+        ramp_done = ((flag - alpha).abs() < ramp_eps).float()
+    return (1.0 - flag) * ramp_done
+
+
+def posture_head_ground_penalty(
+    env: ManagerBasedRlEnv,
+    sensor_name: str = "head_ground_contact",
+    command_name: str = "twist",
+    ramp_eps: float = 0.02,
+    force_threshold_n: float = 0.5,
+    use_normal_force: bool = True,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """Penalize sustained head support once the standing transition is complete."""
+    if sensor_name not in env.scene.sensors:
+        return torch.zeros(env.num_envs, device=env.device)
+    sensor = env.scene.sensors[sensor_name]
+    force = sensor.data.force
+    if force is None:
+        return torch.zeros(env.num_envs, device=env.device)
+    f = torch.nan_to_num(force[:, 0, :], nan=0.0)
+    if use_normal_force:
+        load = f[:, 2].abs()
+    else:
+        load = torch.linalg.norm(f, dim=-1)
+    gate = _stand_ramp_gate(env, command_name, ramp_eps)
+    return -torch.clamp(load - force_threshold_n, min=0.0) * gate
+
+
+def joint_limit_proximity_standing(
+    env: ManagerBasedRlEnv,
+    command_name: str = "twist",
+    ramp_eps: float = 0.02,
+    margin: float = 0.15,
+    asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+    """Penalize joint angles near a limit after the standing ramp has settled."""
+    gate = _stand_ramp_gate(env, command_name, ramp_eps)
+    return joint_pos_limit_proximity(env, asset_cfg=asset_cfg, margin=margin) * gate
+
+
 def posture_rise_bootstrap(
     env: ManagerBasedRlEnv,
     command_name: str,
@@ -6889,12 +7052,15 @@ def _lateral_axis_z(quat: torch.Tensor) -> torch.Tensor:
 
 def _head_top_down(env: ManagerBasedRlEnv, asset: Entity) -> torch.Tensor:
     """True where the head-top axis points at the floor (dot with -z > min)."""
-    if not hasattr(env, "_roulade_head_body_id"):
-        ids, _ = asset.find_bodies("jaw_soft")
+    # OpenMD has no jaw_soft body; its factory sets these before the first step.
+    body_name = getattr(env, "_roulade_head_body_name", "jaw_soft")
+    if getattr(env, "_roulade_head_body_cached", None) != body_name:
+        ids, _ = asset.find_bodies(body_name)
         env._roulade_head_body_id = ids[0]
+        env._roulade_head_body_cached = body_name
     q = asset.data.body_link_quat_w[:, env._roulade_head_body_id]
     w, x, y, z = q[:, 0], q[:, 1], q[:, 2], q[:, 3]
-    a, b, c = _HEAD_TOP_AXIS
+    a, b, c = getattr(env, "_roulade_head_top_axis", _HEAD_TOP_AXIS)
     # z-component of R(q) @ axis_local
     axis_world_z = (
         2.0 * (x * z - w * y) * a + 2.0 * (y * z + w * x) * b + (1.0 - 2.0 * (x * x + y * y)) * c

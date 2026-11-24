@@ -158,6 +158,7 @@ from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs.mdp import dr
 from mjlab.envs.mdp.actions import JointPositionActionCfg
 from mjlab.managers import (
+    MetricsTermCfg,
     CurriculumTermCfg,
     EventTermCfg,
     ObservationTermCfg,
@@ -1417,3 +1418,47 @@ MicroduckRlCfg = RslRlOnPolicyRunnerCfg(
     num_steps_per_env=24,               # 每迭代每环境采集 24 步(与上方 NUM_STEPS_PER_ENV 一致)
     max_iterations=50_000,              # 训练上限(预算参考:走路类任务 4000–6000 迭代)
 )
+
+
+def configure_openmd_locomotion(
+    cfg: ManagerBasedRlEnvCfg, *, final_weights: bool = False
+) -> None:
+    """Add OpenMD head stabilization and straight-walking diagnostics."""
+    for metric_name, signed in (("yaw_dc_abs", False), ("yaw_dc_signed", True)):
+        cfg.metrics[metric_name] = MetricsTermCfg(
+            func=microduck_mdp.yaw_wander_metric,
+            params={
+                "command_name": "twist",
+                "wz_command_threshold": 0.15,
+                "command_threshold": 0.05,
+                "tau_s": 0.8,
+                "signed": signed,
+            },
+        )
+
+    # A warm-started VelStand inherits the final walking stage at step zero.
+    stages = ((0, 1.0),) if final_weights else (
+        (0, 0.0), (600, 0.25), (1000, 0.5), (1500, 1.0)
+    )
+    for name, schedule, function, params, weight in (
+        ("head_motion", "head_stability_weight", microduck_mdp.neck_joint_vel_deadband_l2,
+         {"deadband": 2.0}, -0.08),
+        ("head_droop", "head_droop_weight", microduck_mdp.head_droop_penalty,
+         {"command_name": "head_pose", "deadband": 0.15}, 2.0),
+        ("head_forward", "head_forward_weight", microduck_mdp.head_forward_penalty,
+         {"command_name": "head_pose", "deadband_yaw": 0.12,
+          "deadband_roll": 0.10, "command_gate": 0.05}, 2.0),
+    ):
+        cfg.rewards[name] = RewardTermCfg(
+            func=function, weight=weight if final_weights else 0.0, params=params
+        )
+        cfg.curriculum[schedule] = CurriculumTermCfg(
+            func=microduck_mdp.reward_weight,
+            params={
+                "reward_name": name,
+                "weight_stages": [
+                    {"step": iteration * NUM_STEPS_PER_ENV, "weight": factor * weight}
+                    for iteration, factor in stages
+                ],
+            },
+        )

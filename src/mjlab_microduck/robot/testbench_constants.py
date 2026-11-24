@@ -51,10 +51,8 @@ HOME_FRAME = EntityCfg.InitialStateCfg(
 )
 
 
-# HD-1910-C001 on the bench. Same servo/params as the robot
-# (microduck_constants._BAM_ACTUATOR_KWARGS), so bench sims and robot training
-# cannot disagree. kp_fw=32 is the firmware Kp readback (reg50) — the old 200 was
-# the XL330 value and is ~6x too stiff for this servo.
+# The 5 V pendulum fit uses the HD-1910 m5 control law at kp_fw=32.
+# Robot training uses the 7.5 V m6 fit at kp_fw=5.
 testbench_actuators = BamActuatorCfg(
     motor_name="hd1910",
     model="m5",

@@ -7,8 +7,7 @@
 # stops exactly at the offending package.
 #
 # Versions come from the repo's uv.lock / the verified local environment.
-# Order matters: torch and warp first, mjlab last. Otherwise mjlab's ">= constraints"
-# can pull warp-lang 1.13+ (warp 1.15 removed `wp.context`, which mjlab 1.3 uses).
+# Re-pin the simulation stack and W&B to the versions supported by mjlab and rsl-rl.
 
 # --- simulation core ---------------------------------------------------------
 torch==2.9.1                # deep learning + CUDA 12.8 runtime (PyPI x86_64 wheel ships sm_120, ready for RTX 5090)
@@ -16,6 +15,7 @@ warp-lang==1.12.0           # physics engine behind MuJoCo Warp; must stay on 1.
 mujoco==3.10.0              # CPU-side MuJoCo (export / rehearsal scripts)
 mujoco-warp==3.8.1          # GPU parallel physics (where the training FLOPs go); do not jump to 3.9+ (ls_parallel removed)
 mjlab==1.3.0                # training framework; pulls rsl-rl-lib==5.0.1 / tyro / wandb / tensorboard / viser / trimesh / tensordict
+wandb==0.24.0               # compatible with rsl-rl-lib 5.0.1 and uv.lock
 
 # --- numerics / export -------------------------------------------------------
 numpy==2.4.1                # numerics

@@ -1,5 +1,7 @@
 # Microduck RL
 
+For **OpenMicroDuck with HD‑1910 servos**, start with the [PPO training guide (中文)](docs/OpenMicroDuck_PPO训练教程.md) and the [OpenMD task and policy index](docs/OpenMicroDuck_retrain_guide.md). The Microduck quickstart below uses a different robot configuration.
+
 <img width="2215" height="884" alt="image" src="https://github.com/user-attachments/assets/5db7cc83-b3ce-4f7c-83f0-0572a63baed7" />
 
 
