@@ -39,7 +39,7 @@ DEG = np.pi / 180.0
 def build_write(pid: int, addr: int, data: bytes) -> bytes:
     # FT-SCS WRITE params = [addr, data...] — no data-length byte (the frame
     # LEN field carries it). A length byte here shifts every write by one
-    # address (e.g. writing MODE=0 sets MODE=1) — see docs/ftscs_protocol.md §4.3.
+    # address (e.g. writing MODE=0 sets MODE=1).
     params = bytes([addr]) + bytes(data)
     ln = len(params) + 2
     return HEAD + bytes([pid, ln, INST_WRITE]) + params + bytes(

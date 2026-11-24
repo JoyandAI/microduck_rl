@@ -2,13 +2,13 @@
 # -*- coding: utf-8 -*-
 """腿摆标定 —— bam.fit 包装 + MAE 选档报告(你执行)。
 
-对 record_leg_pendulum.py 录出的 log 目录跑 bam.fit(optuna/CMA-ES, 已随
+对 process_bench_logs.py 重采样后的采集日志跑 bam.fit(optuna/CMA-ES, 已随
 .venv 可用), 对 m1/m3/m6 各拟合一次, 然后逐 log 回放算 sim-vs-真机位置 MAE,
 输出 mae_report.md —— <10% 过门, 选较小者作为落地参数。
 
 用法:
     .venv/bin/python scripts/fit_leg_pendulum.py \
-      --logdir hls2909_calibration/pendulum \
+      --logdir hls2909_calibration/bench_processed \
       --actuator hls2909 --models m1 m6 \
       --trials 20000 --out hls2909_calibration/fit
 
@@ -91,7 +91,7 @@ def main() -> int:
     logs = build_params(args.logdir)
     print(f"[i] log 数 = {len(logs)}")
     if not logs:
-        print("[!] 空 logdir, 先跑 record_leg_pendulum.py")
+        print("[!] 日志目录为空。请将 --logdir 指向 process_bench_logs.py 输出的目录。")
         return 1
 
     # 每个质量/轨迹的最后一次重复作为独立验证集，避免用拟合数据给自己打分。

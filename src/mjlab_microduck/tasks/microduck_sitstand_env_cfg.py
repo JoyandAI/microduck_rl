@@ -276,7 +276,7 @@ def make_microduck_sitstand_env_cfg(
     # lets the head droop, which reads as "can stand but won't lift the head".
     #
     # Weights are scaled by the CURRENT head mass ratio from the HD-1910 servo
-    # swap (docs/feetech_hd1910_servo_notes.md: XL330 18g -> HD-1910 21g = +3g,
+    # swap (XL330 18g -> HD-1910 21g = +3g,
     # 14 servos = +42g, robot 737g -> 779g). Head assembly went 279.9g -> 288.9g
     # (+3.2%), so the gravity droop load grows x1.032; standup's final
     # 1.5 * 1.032 = 1.55. Use the MASS ratio, not the body-share (share rose to

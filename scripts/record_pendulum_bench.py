@@ -29,7 +29,7 @@
 温度 >50°C / |I|>阈值×0.7s / |位置误差|>0.8rad×1.0s(卡死) / 单条 30s 看门狗 → 立即断扭矩。
 ⚠ HD-1910(mode4) 的 reg69 电流读数不可信(起步瞬态恒 ≈2.1A, 峰值可达 4A > 物理堵转
 1.36A) → 该型号默认把电流中止关掉(--current-abort 0), 卡死检测与温度/看门狗为主;
-HLS 保持 1.0A 阈值。见 /home/joyandai/bam/docs/identification/hd1910_servo_notes.md §6.5/6.6。
+HLS 保持 1.0A 阈值。
 ⚠ 摆锤摆动平面内手勿入; 端部砝码请勿随意加大(完整静态重力矩上限 0.35N·m)。
 q_zero 超出按所选轨迹振幅实算的安全带(HD mode4 误差不回绕, 目标须整体落于 [0,4095])
 时, 先自动用 reg31(位置偏移)居中到 2048(动态算值, 换舵机通用; 探针+双符号编码回退+
@@ -388,7 +388,7 @@ def main() -> int:
                     help="日志 motor 标签(默认 auto: reg3=7946→hd1910, 其余→hls2909)")
     ap.add_argument("--current-abort", type=float, default=None,
                     help="电流中止阈值 [A](|I|>阈值持续 0.7s → 断扭); 0=关闭。"
-                         "缺省: HLS=1.0; HD-1910=0(关闭, reg69 读数不可信, 见 hd1910_servo_notes.md §6.5/6.6)")
+                         "缺省: HLS=1.0; HD-1910=0(关闭, mode 4 下 reg69 的瞬态读数不可靠)")
     ap.add_argument("--jam-err-rad", type=float, default=JAM_ERR_RAD,
                     help=f"位置误差卡死检测阈值 [rad](默认 {JAM_ERR_RAD}); 0=关闭")
     ap.add_argument("--jam-hold-s", type=float, default=JAM_HOLD_S,
@@ -489,8 +489,7 @@ def main() -> int:
 
     if args.current_abort is None:
         # HD-1910 mode 4 的 reg69 不是可信电流: 起步瞬态恒读 ≈2.1A(317 LSB),
-        # 单条内峰值可达 4.06A, 均 > 5.1V/3.75Ω≈1.36A 的物理堵转上限
-        # (hd1910_servo_notes.md §6.5 T5 / §6.6⑤, 2026-09-10 又一次实测 2.03A 误中止)。
+        # 单条内峰值可达 4.06A, 均 > 5.1V/3.75Ω≈1.36A 的物理堵转上限。
         # → HD 默认关闭电流中止, 安全链改由 温度 + 30s 看门狗 + 位置误差卡死检测
         #   + 3A 物理保险丝 + 人在场 承担; HLS 保持原 1.0A 阈值。
         current_abort_a = 0.0 if motor == "hd1910" else CURRENT_LIMIT_A

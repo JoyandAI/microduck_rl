@@ -106,9 +106,8 @@ that motor.
       - Feetech HD-1910-C001 servo-actuator (6 V): position servo mode controller
         (firmware mode 4, Sim2Real); register map and gain scaling pending
         verification against the official memory table
-        (`Parameters <https://github.com/Rhoban/bam/tree/main/bam/params/hd1910>`__,
-        `model <https://github.com/Rhoban/bam/blob/main/bam/feetech/actuator.py>`__,
-        `identification notes <https://github.com/Rhoban/bam/blob/main/docs/identification/hd1910_servo_notes.md>`__)
+        (:download:`m5 parameters for this controller <../../bam/params/hd1910/m5.json>`,
+        :download:`actuator implementation <../../bam/feetech/actuator.py>`)
       - .. raw:: html
 
            <a class="sd-btn sd-btn-outline-primary motor-btn" href="mujoco_cpu.html?motor=hd1910">Use in MuJoCo</a>

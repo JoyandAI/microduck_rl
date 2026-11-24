@@ -11,9 +11,8 @@
   3. 脚本自动: 找串口 → PING 找舵机 ID → 读内存表全部相关寄存器 →
      输出人话对照表 + 标定 JSON (hls_registers.json)。把它发回即可。
 
-协议依据: docs/ftscs_protocol.md (FT-SCS 自定义协议, 帧 0xFF 0xFF|ID|LEN|INSTR|PARA|CHECK,
-Check = ~(ID+LEN+INSTR+PARA)&0xFF)；寄存器依据: docs/feetech_hls_memtable.md
-(磁编码舵机为小端: 低字节在前)。
+FT-SCS 指令帧为 0xFF 0xFF | ID | LEN | INSTR | 参数字节 | CHECK。
+CHECK 是 ID、LEN、INSTR 及各参数字节之和按位取反后的低 8 位。多字节寄存器按小端读取。
 """
 
 from __future__ import annotations

@@ -173,7 +173,7 @@ def tick_to_rad(tick: int) -> float:
 def build_sync_write(ids: list[int], addr: int, data_per_id: list[bytes]) -> bytes:
     """FT-SCS SYNC WRITE frame (0x83, broadcast FE, no reply).
 
-    Format per docs/ftscs_protocol.md §4.6:
+    FT-SCS synchronous write frame:
       FF FF FE LEN 83 ADDR LEN2 [ID DATALEN2...] CHECK
     with LEN = (LEN2+1)*n + 4.
     """
@@ -192,7 +192,7 @@ def build_sync_write(ids: list[int], addr: int, data_per_id: list[bytes]) -> byt
 def build_write(pid: int, addr: int, data: bytes) -> bytes:
     """FT-SCS WRITE DATA frame (0x03), returns error/status reply.
 
-    Protocol (ftscs_protocol.md §4.3): params = [addr, data...] — the data
+    FT-SCS write parameters are [addr, data...]. The data
     length is implied by the frame length, there is NO data-length byte.
     (A length byte here shifts every write by one address: writing MODE=0
     would set MODE=1, exactly the bug that put the servos in constant-speed

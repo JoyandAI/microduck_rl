@@ -3,8 +3,8 @@
 Locks the sim2servo contract of scripts/record_walk_angles.py and
 scripts/replay_walk_angles.py:
 
-* FT-SCS frame builders match the official doc examples byte-for-byte
-  (docs/ftscs_protocol.md §4.1/4.2/4.6) — a checksum bug here would silently
+* FT-SCS frame builders match the manufacturer's protocol examples byte-for-byte
+  (sections 4.1, 4.2 and 4.6) — a checksum bug here would silently
   make every servo ignore the replay;
 * rad → servo tick conversion matches duck-control/src/ftbus.rs
   `rad_to_position_count` (runtime authority);

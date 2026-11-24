@@ -11,8 +11,8 @@ sim 侧: 用真实 bam 类(load_model hls2909/m1 + HLS2909Actuator 控制律)
   输出 MAE(rad)、峰值误差、10% 门、并对 (J, friction_scale) 做小网格搜索,
 报告最优组合 —— J 是"关节等效惯量"(真机 DTs=3ms 下无法直接标定, 是本次最大未知量)。
 
-用法(无硬件依赖):
-  /usr/bin/python3 scripts/eval_sim_vs_real_step.py --data hls2909_calibration/agent_battery_*/step_response_id23_*.json
+用法：将 --data 指向已采集的阶跃响应文件。
+  python3 scripts/eval_sim_vs_real_step.py --data path/to/step_response.json
 """
 
 from __future__ import annotations

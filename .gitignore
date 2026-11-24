@@ -39,3 +39,15 @@ logdir/.claude/
 logdir/
 logdir/.claude/worktrees/
 *.bak_servoswap
+
+# Local bench captures and training outputs
+/hd1910_calibration/
+/hls2909_calibration/
+/hls_calibration.json
+/hls_registers*.json
+/sitstand_angles.csv
+/sitstand_angles.json
+/walk_angles.csv
+/walk_angles.json
+/train_*.log
+/MUJOCO_LOG.TXT

@@ -1,3 +1,0 @@
-m1 kd=0.74 exit=0
-m1 kd=160.0 exit=0
-m1 kd=5.0 exit=0

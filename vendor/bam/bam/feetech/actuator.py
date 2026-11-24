@@ -158,8 +158,7 @@ class STS3215Actuator(VoltageControlledActuator):
 class HLS2909Actuator(VoltageControlledActuator):
     """Feetech HL-2909-C001 12 V TTL bus servo (position servo mode).
 
-    Reference numbers (identification in ``docs/feetech_hls_memtable.md`` of the
-    Microduck repository, firmware 3.45, all 15 servos identical):
+    Reference values for firmware 3.45:
 
     * ``kt`` = 1.454 N·m/A on the *output* side (datasheet KT = 14.83 kg·cm/A),
       gear ratio 320:1;

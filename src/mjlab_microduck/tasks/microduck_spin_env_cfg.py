@@ -14,7 +14,6 @@ poussent vers le roulement différentiel — le seul mécanisme physique certain
 4 roues passives : patin gauche vers l'arrière, patin droit vers l'avant.
 
 Obs 61D unifié → interchangeable au runtime avec roller / ground_pick / crouch.
-Voir docs/superpowers/specs/2026-08-04-spin-env-design.md.
 """
 
 import math

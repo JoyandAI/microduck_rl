@@ -1,3 +1,0 @@
-m1 pinned exit=0
-m2 pinned exit=0
-m6 pinned exit=0

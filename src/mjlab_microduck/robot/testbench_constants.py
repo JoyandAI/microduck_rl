@@ -1,7 +1,6 @@
 """Single-servo testbench entity configuration for sim2real validation.
 
-NOTE (2026-09): the bench servo is now the **Feetech HD-1910-C001** (21 g, 5 V
-rail) — the whole pendulum identification in `hd1910_calibration/` was run on it.
+The bench uses a Feetech HD-1910-C001 servo (21 g, 5 V rail).
 The XML file/dir keep their historical `xl330_test_bench` name (renaming them
 would churn the bench tooling); only the *actuator model* is updated to the servo
 actually mounted, so bench sims match the identified parameters.
