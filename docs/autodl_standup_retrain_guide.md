@@ -77,6 +77,18 @@ python scripts/check_openmd_training.py
 
 `uv pip check` 核对依赖声明。上面的导入和一次 CUDA 运算核对运行时；最后的预检核对实际导入的源码、BAM 路径和 m6 参数文件，编译 7 个代表性任务的机器人模型和网格。看到 `HD-1910 m6 OK` 和对应的 `get_openmd_*_spec` 后再开始训练。可在交互终端用 `list-envs | grep -F OpenMD` 查看全部 14 个基础任务；这个版本的 `list-envs` 以任务数作为退出码。自动化或启用 `set -o pipefail` 时，用 `python scripts/check_openmd_training.py` 判断成功。若只能看到 `MicroDuck`，运行 `which python list-envs` 核对当前虚拟环境与 editable 安装位置。[检查脚本](../scripts/check_openmd_training.py)
 
+### 注册表里找不到 OpenMD
+
+在刚安装的仓库根目录运行下面的命令。最后一行会加载已安装的任务插件并检查指定任务。若插件导入失败，终端会显示具体的配置文件和缺少的 Python 名称。
+
+```bash
+git branch --show-current
+git rev-parse --short HEAD
+.venv/bin/python scripts/check_openmd_training.py --registered-task Mjlab-Velocity-Flat-Backlash-OpenMD
+```
+
+反馈时请附上分支、提交号和完整的 Python 异常。若 uv 提示 `Failed to hardlink files; falling back to full copy`，表示缓存和安装目录之间改用复制，安装可以继续。用上面的任务检查确认注册结果。
+
 ### 旧环境报错时怎样重装
 
 如果 `uv pip check` 通过，训练入口仍报找不到 `libmujoco.so.3.10.0`，或在导入 `mjviser` 时报 API、模块或符号错误，先在仓库根目录检查正在使用的解释器、已装版本、共享库和真实导入。当前锁文件对应 `mujoco==3.10.0`、`mjviser==0.0.14`；包的声明可以满足而原生库仍无法载入。
