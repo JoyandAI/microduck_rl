@@ -207,6 +207,37 @@ def test_the_readme_tells_the_owner_how_to_run_it():
     assert "--hold <seconds>" in m.render_readme(pp, "someone/microduck-flamingo")
 
 
+def test_the_readme_puts_the_repo_under_the_robotics_pipeline():
+    ep = m.build_manifest(name="bow", kind="episodic", description="Bows.", duration_s=4.0)
+    front = m.render_readme(ep, "someone/microduck-bow").split("---")[1]
+    assert "pipeline_tag: robotics" in front.splitlines()
+    assert "base_model" not in front, "an original policy declares no parent"
+
+
+def test_a_gait_tags_its_slot_for_the_hub_snippet():
+    gait = m.build_manifest(name="my-walk", kind="perpetual", description="d", slot="walk")
+    front = m.render_readme(gait, "u/microduck-my-walk").split("---")[1].splitlines()
+    assert "- microduck-slot:walk" in front
+    no_slot = m.build_manifest(name="bow", kind="episodic", description="d", duration_s=4.0)
+    assert "microduck-slot" not in m.render_readme(no_slot, "u/microduck-bow")
+
+
+def test_a_remix_declares_its_base_model():
+    ep = m.build_manifest(name="bow", kind="episodic", description="Bows.", duration_s=4.0)
+    text = m.render_readme(ep, "someone/microduck-deep-bow", base_model="pollen/microduck-bow")
+    front = text.split("---")[1].splitlines()
+    assert "base_model: pollen/microduck-bow" in front
+    assert "base_model_relation: finetune" in front
+    assert "https://huggingface.co/pollen/microduck-bow" in text
+
+
+@pytest.mark.parametrize("base", ["microduck-bow", "a/b/c", "", "someone/microduck-bow"])
+def test_a_bad_base_model_is_refused(base):
+    ep = m.build_manifest(name="bow", kind="episodic", description="Bows.", duration_s=4.0)
+    with pytest.raises(m.ManifestError, match="base_model"):
+        m.render_readme(ep, "someone/microduck-bow", base_model=base)
+
+
 # -- the ONNX gate ------------------------------------------------------------------------------
 
 
@@ -264,3 +295,33 @@ def test_the_cli_dry_run_writes_a_repo(tmp_path, monkeypatch):
     assert manifest["training"]["source_file"] == "out.onnx"
     assert "commit" in manifest["training"], "git provenance is filled from the checkout"
     assert "robotctl policy add bow someone/microduck-bow" in (out / "README.md").read_text()
+
+
+def test_the_cli_ships_a_video_as_replay_mp4_and_nowhere_else(tmp_path, monkeypatch):
+    """The Hub's replay widget finds `replay.mp4` by name; the manifest and README stay silent."""
+    from mjlab_microduck.publish.cli import PublishConfig, run
+
+    policy = _tiny_policy(tmp_path / "out.onnx")
+    clip = tmp_path / "bow_take3.mp4"
+    clip.write_bytes(b"not really an mp4")
+    monkeypatch.chdir(tmp_path)
+    code = run(PublishConfig(
+        repo="someone/microduck-bow", kind="episodic", onnx=str(policy),
+        duration_s=4.0, description="Bows.", video=str(clip), dry_run=True,
+    ))
+    assert code == 0
+    out = tmp_path / "publish-bow"
+    assert (out / m.REPLAY_FILE).read_bytes() == clip.read_bytes()
+    for text in ((out / "manifest.json").read_text(), (out / "README.md").read_text()):
+        assert "mp4" not in text and "bow_take3" not in text
+
+
+def test_the_cli_refuses_a_missing_video(tmp_path):
+    from mjlab_microduck.publish.cli import PublishConfig, run
+
+    policy = _tiny_policy(tmp_path / "out.onnx")
+    with pytest.raises(SystemExit):
+        run(PublishConfig(
+            repo="someone/microduck-bow", kind="episodic", onnx=str(policy),
+            duration_s=4.0, video=str(tmp_path / "nope.mp4"), dry_run=True,
+        ))

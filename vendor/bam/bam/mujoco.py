@@ -173,10 +173,17 @@ class MujocoController:
             + self.mujoco_data.qfrc_constraint[self.dof_indexes]
         )
 
-        # Repeats the ids (now N_id x N_efc). mjCNSTR_FRICTION_DOF stores the
-        # dof index in efc_id (engine_core_constraint.c), unlike LIMIT_JOINT
-        # which stores a joint id. Matching against joint_indexes is silently
-        # wrong on any model with a freejoint (Microduck: offset 5).
+        # Repeats the ids (now N_id x N_efc)
+        #
+        # MuJoCo stores a DOF ADDRESS in efc_id for FRICTION_DOF constraints, and
+        # the actuator's trnid is a JOINT id — they differ by the freejoint's 6
+        # dofs (5 after the 1-dof gap on Microduck). Matching efc_id against
+        # self.joint_indexes therefore strips NOTHING for the first joints and
+        # strips a NEIGHBOURING joint's friction for the rest (measured on
+        # robot_walk.xml: 9 of 14 actuators picked up another joint's row and
+        # the 5 left-leg joints got none, 0.18 of 0.28 N·m). Match against the
+        # dof indexes, exactly like bam.mjlab.BamActuator._dof_friction_force.
+        # Regression: tests/test_friction_dof_id.py. Upstream: JoyandAI 330754b.
         efc_id_repeated = np.repeat(
             [self.mujoco_data.efc_id], len(self.actuator), axis=0
         )

@@ -1,0 +1,218 @@
+[
+ {
+  "label": "HOME legs, head at HOME, pitch 0",
+  "trunk_pitch_deg": 0.0,
+  "contact_patch_x_extent_mm": 47.39273531172864,
+  "feet_flat": true,
+  "trunk_z_m": 0.11718236219874865,
+  "com_x_m": 0.0004292344788328303,
+  "com_y_m": -3.121273809044073e-05,
+  "com_z_m": 0.13755734746528084,
+  "total_mass_g": 779.2431799999999,
+  "support_poly_x_range_mm": [
+   -16.658543641311244,
+   30.734191670417395
+  ],
+  "support_poly_y_range_mm": [
+   -59.580665988386265,
+   59.58066547753954
+  ],
+  "support_poly_n_verts": 90,
+  "com_inside_margin_mm": 17.087777122643164,
+  "com_over_ankle_offset_mm": 0.4133126332107663,
+  "head_mass_g": 288.9274,
+  "neck_gravity_torque_Nm": 0.0451252198333793
+ },
+ {
+  "label": "HOME legs, head at HOME, pitch 10",
+  "trunk_pitch_deg": 10.0,
+  "contact_patch_x_extent_mm": 13.863995359643043,
+  "feet_flat": false,
+  "trunk_z_m": 0.1200153137657948,
+  "com_x_m": 0.003960792504138587,
+  "com_y_m": -3.12127380904385e-05,
+  "com_z_m": 0.14000622143874406,
+  "total_mass_g": 779.2431799999999,
+  "support_poly_x_range_mm": [
+   -2.4841798699804274,
+   11.379815489662615
+  ],
+  "support_poly_y_range_mm": [
+   -57.29645664811499,
+   57.29645667372786
+  ],
+  "support_poly_n_verts": 34,
+  "com_inside_margin_mm": 6.444972241461741,
+  "com_over_ankle_offset_mm": 20.37777646378854,
+  "head_mass_g": 288.9274,
+  "neck_gravity_torque_Nm": 0.045492993242864266
+ },
+ {
+  "label": "HOME legs, head at HOME, pitch 20",
+  "trunk_pitch_deg": 20.0,
+  "contact_patch_x_extent_mm": 10.154075970693333,
+  "feet_flat": false,
+  "trunk_z_m": 0.11949432252313193,
+  "com_x_m": 0.0073720038534638025,
+  "com_y_m": -3.121273809043961e-05,
+  "com_z_m": 0.1384937389887431,
+  "total_mass_g": 779.2431799999999,
+  "support_poly_x_range_mm": [
+   -18.31076158496054,
+   -8.156685614267207
+  ],
+  "support_poly_y_range_mm": [
+   -57.231336990399186,
+   57.23133683747542
+  ],
+  "support_poly_n_verts": 36,
+  "com_inside_margin_mm": -15.528689561080219,
+  "com_over_ankle_offset_mm": 39.72307186816652,
+  "head_mass_g": 288.9274,
+  "neck_gravity_torque_Nm": 0.06947470014470232
+ },
+ {
+  "label": "HOME legs, head at HOME, pitch 30",
+  "trunk_pitch_deg": 30.0,
+  "contact_patch_x_extent_mm": 9.197771324155065,
+  "feet_flat": false,
+  "trunk_z_m": 0.11558303753505028,
+  "com_x_m": 0.010559220596115478,
+  "com_y_m": -3.121273809044184e-05,
+  "com_z_m": 0.1330136751381844,
+  "total_mass_g": 779.2431799999999,
+  "support_poly_x_range_mm": [
+   -36.58957834337417,
+   -27.391807019219108
+  ],
+  "support_poly_y_range_mm": [
+   -57.68961698389901,
+   57.68961692502886
+  ],
+  "support_poly_n_verts": 42,
+  "com_inside_margin_mm": -37.95102761655583,
+  "com_over_ankle_offset_mm": 57.86140183467454,
+  "head_mass_g": 288.9274,
+  "neck_gravity_torque_Nm": 0.09987542488619548
+ },
+ {
+  "label": "HOME legs, head at HOME, pitch 35.4",
+  "trunk_pitch_deg": 35.4,
+  "contact_patch_x_extent_mm": 9.22351380974347,
+  "feet_flat": false,
+  "trunk_z_m": 0.1121027768741272,
+  "com_x_m": 0.012152726306243254,
+  "com_y_m": -3.12127380904385e-05,
+  "com_z_m": 0.12846234625032918,
+  "total_mass_g": 779.2431799999999,
+  "support_poly_x_range_mm": [
+   -46.523190374365626,
+   -37.29967656462216
+  ],
+  "support_poly_y_range_mm": [
+   -58.02542576775247,
+   58.02542562681652
+  ],
+  "support_poly_n_verts": 48,
+  "com_inside_margin_mm": -49.45240350484045,
+  "com_over_ankle_offset_mm": 66.95824906679279,
+  "head_mass_g": 288.9274,
+  "neck_gravity_torque_Nm": 0.1163641970004593
+ },
+ {
+  "label": "HOME legs, head at HOME, pitch 40",
+  "trunk_pitch_deg": 40.0,
+  "contact_patch_x_extent_mm": 9.080789836408178,
+  "feet_flat": false,
+  "trunk_z_m": 0.10840668689319363,
+  "com_x_m": 0.013425600764177623,
+  "com_y_m": -3.121273809044073e-05,
+  "com_z_m": 0.12373892453060766,
+  "total_mass_g": 779.2431799999999,
+  "support_poly_x_range_mm": [
+   -54.73730362454256,
+   -45.65651378813439
+  ],
+  "support_poly_y_range_mm": [
+   -58.33962112392027,
+   58.3396223807543
+  ],
+  "support_poly_n_verts": 47,
+  "com_inside_margin_mm": -59.082114590757755,
+  "com_over_ankle_offset_mm": 74.24164238571802,
+  "head_mass_g": 288.9274,
+  "neck_gravity_torque_Nm": 0.12997593260354398
+ },
+ {
+  "label": "HOME legs, neck at HARD STOP, pitch 0",
+  "trunk_pitch_deg": 0.0,
+  "contact_patch_x_extent_mm": 47.39273531172864,
+  "feet_flat": true,
+  "trunk_z_m": 0.11718236219874865,
+  "com_x_m": 0.02977680437278049,
+  "com_y_m": -3.121273809043961e-05,
+  "com_z_m": 0.10199336830571981,
+  "total_mass_g": 779.2431799999999,
+  "support_poly_x_range_mm": [
+   -16.658543641311244,
+   30.734191670417395
+  ],
+  "support_poly_y_range_mm": [
+   -59.580665988386265,
+   59.58066547753954
+  ],
+  "support_poly_n_verts": 90,
+  "com_inside_margin_mm": 0.9573871160764762,
+  "com_over_ankle_offset_mm": 29.760882527158426,
+  "head_mass_g": 288.9274,
+  "neck_gravity_torque_Nm": 0.2102115841770235
+ },
+ {
+  "label": "HOME legs, neck at HARD STOP, pitch 20",
+  "trunk_pitch_deg": 20.0,
+  "contact_patch_x_extent_mm": 10.154075970693333,
+  "feet_flat": false,
+  "trunk_z_m": 0.11949432252313193,
+  "com_x_m": 0.022786101471420944,
+  "com_y_m": -3.12127380904385e-05,
+  "com_z_m": 0.09503707014533169,
+  "total_mass_g": 779.2431799999999,
+  "support_poly_x_range_mm": [
+   -18.31076158496054,
+   -8.156685614267207
+  ],
+  "support_poly_y_range_mm": [
+   -57.231336990399186,
+   57.23133683747542
+  ],
+  "support_poly_n_verts": 36,
+  "com_inside_margin_mm": -30.94278717903736,
+  "com_over_ankle_offset_mm": 55.13716948612367,
+  "head_mass_g": 288.9274,
+  "neck_gravity_torque_Nm": 0.17854918318718702
+ },
+ {
+  "label": "HOME legs, neck at HARD STOP, pitch 35.4",
+  "trunk_pitch_deg": 35.4,
+  "contact_patch_x_extent_mm": 9.22351380974347,
+  "feet_flat": false,
+  "trunk_z_m": 0.1121027768741272,
+  "com_x_m": 0.015473202723165377,
+  "com_y_m": -3.121273809043739e-05,
+  "com_z_m": 0.08247266361708523,
+  "total_mass_g": 779.2431799999999,
+  "support_poly_x_range_mm": [
+   -46.523190374365626,
+   -37.29967656462216
+  ],
+  "support_poly_y_range_mm": [
+   -58.02542576775247,
+   58.02542562681652
+  ],
+  "support_poly_n_verts": 48,
+  "com_inside_margin_mm": -52.77287992176257,
+  "com_over_ankle_offset_mm": 70.27872548371492,
+  "head_mass_g": 288.9274,
+  "neck_gravity_torque_Nm": 0.14038531995435494
+ }
+]

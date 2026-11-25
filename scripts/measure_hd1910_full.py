@@ -281,7 +281,11 @@ def t5_dterm(b: Bench):
             ss = float(np.mean(pos[-8:]))
             out.append(dict(kp=kp, kd=kd, readback=(r50, r51), overshoot_deg=overshoot,
                             rise_90_ms=rise, steady_err_lsb=float(tgt - ss),
-                            n=len(pos), pos_head=[round(float(p), 1) for p in pos[:12]]))
+                            n=len(pos), pos_head=[round(float(p), 1) for p in pos[:12]],
+                            target_lsb=int(tgt), series=[
+                                dict(t=round(float(x["t"]), 6), pos=int(x["pos"]),
+                                     duty=(None if x["duty"] is None else float(x["duty"])))
+                                for x in s if x["pos"] is not None]))
         b.hold(b.q0, 0.3)
     write_regs(b.ser, b.pid, 50, [b.orig50 or 32])
     write_regs(b.ser, b.pid, 51, [b.orig51 or 40])

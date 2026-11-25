@@ -7,8 +7,8 @@ name = "mjlab-microduck"
 version = "0.1.0"
 description = "RL training environments for the Microduck robot, built on mjlab"
 readme = "README.md"
-license = "Apache-2.0"
-license-files = ["LICENSE"]
+license = "Apache-2.0 AND CC-BY-NC-SA-4.0"
+license-files = ["LICENSE", "LICENSE-MODELS.md"]
 # <3.13: bam (better-actuator-models) pins requires-python <3.13, and jobs must
 # run the same interpreter we test locally (3.12) — a floating upper bound let
 # HF jobs pick 3.13.14 (2026-07-21).

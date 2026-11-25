@@ -120,7 +120,11 @@ def test_warm_start_collapses_inherited_curricula_only():
         pytest.skip("warm start disabled")
     base = make_microduck_velocity_env_cfg()
     cfg = vs.make_microduck_velstand_env_cfg()
+    # body_pose_range is REPLACED by velstand's own body-control ramp (ENABLE_BODY_CONTROL)
+    replaced = {"body_pose_range"} if vs.ENABLE_BODY_CONTROL else set()
     for name, term in base.curriculum.items():
+        if name in replaced:
+            continue
         for key, val in cfg.curriculum[name].params.items():
             if key.endswith("_stages"):
                 assert len(val) == 1 and val[0]["step"] == 0, (name, key)
@@ -270,9 +274,14 @@ class _Sim:
     def __init__(self, n): self.data = _SimData(n)
 
 
+class _FlatScene(dict):
+    def __init__(self, n):
+        super().__init__(robot=object()); self.env_origins = torch.zeros(n, 3)
+
+
 class _SpawnEnv:
     def __init__(self, n):
-        self.num_envs = n; self.device = "cpu"; self.sim = _Sim(n); self.scene = {"robot": object()}
+        self.num_envs = n; self.device = "cpu"; self.sim = _Sim(n); self.scene = _FlatScene(n)
 
 
 def _tilt_and_axes(q):
@@ -367,7 +376,9 @@ def test_reference_recipe_constants():
     assert vs.EXPERT_BC_COEF == 1.0 and vs.FALLEN_SMOOTHNESS_SCALE == 0.1
     assert vs.SERVO_STALL_WEIGHT == -0.05 and vs.GENTLE_RISE_WEIGHT == 0.005
     p = vs.make_microduck_velstand_env_cfg().events["random_prone_init"].params
-    assert p.get("joint_random_prob", 0.0) == 0.0  # post-fall-like spawns OFF in the reference recipe
+    # post-fall-like spawns were OFF in the reference recipe; the 2026-10 stand-up coverage turns them
+    # back on together with the head-masked teacher (runs 5/6 failed on the teacher label, not the spawns)
+    assert p.get("joint_random_prob", 0.0) == (vs.WIDE_JOINT_RANDOM_PROB if vs.ENABLE_WIDE_SPAWNS else 0.0)
 
 
 def test_randomize_servo_joints_uniform_respects_limits(monkeypatch):
@@ -406,3 +417,172 @@ def test_prone_spawn_adds_terrain_origin_z():
     z = env.sim.data.qpos[:, 2]
     assert torch.allclose(z, torch.tensor([0.07, 0.37, 0.19, 0.12]), atol=1e-6)
     assert (torch.rad2deg(torch.acos((1 - 2 * (env.sim.data.qpos[:, 4] ** 2 + env.sim.data.qpos[:, 5] ** 2)).clamp(-1, 1))) > 89).all()
+
+
+def test_body_frame_masks():
+    """Standing + tilt-only → stand expert; standing + z → off-anchor, no teacher; walking or zero body → untouched."""
+    from mjlab_microduck.tasks.distill import body_frame_masks
+    obs = torch.zeros(5, 61)
+    obs[0, 55 + 3] = 0.1                       # standing, roll only → teach
+    obs[1, 55 + 2] = -0.02; obs[1, 55 + 4] = 0.1  # standing, z + pitch → free
+    obs[2, 48] = 0.3; obs[2, 55 + 3] = 0.1     # walking with a (stale) body value → untouched
+    obs[3, 55 + 0] = 0.002                     # standing, x/y alive noise only → untouched (stays anchored)
+    frames, teach = body_frame_masks(obs, (48, 51), (55, 61), (2, 3, 4), (2,))
+    assert frames.tolist() == [True, True, False, False, False]
+    assert teach.tolist() == [True, False, False, False, False]
+
+
+def test_body_control_wired():
+    if not vs.ENABLE_BODY_CONTROL:
+        return
+    cfg = vs.make_microduck_velstand_env_cfg()
+    cmds = list(cfg.commands)
+    assert cmds.index("twist") < cmds.index("body_pose")  # gate reads the twist term computed this step
+    b = cfg.commands["body_pose"]
+    assert type(b).__name__ == "StandingGatedPoseCommandCfg" and b.zero_command_prob == vs.BODY_ZERO_CMD_PROB
+    assert len(b.ranges) == 6 and b.axis_zero_prob[2] == vs.BODY_Z_ZERO_PROB
+    # final stage covers the full range; x/y/yaw stay inside alpha_stand's normalizer comfort zone
+    final = cfg.curriculum["body_pose_range"].params["range_stages"][-1]["ranges"]
+    assert final[3][1] == pytest.approx(vs.BODY_CMD_MAX_ANGLE) and final[2] == pytest.approx(vs.BODY_CMD_Z_RANGE)
+    assert abs(final[0][1]) <= 0.005 and abs(final[5][1]) <= 0.05
+    r = cfg.rewards["body_pose_tracking"]
+    assert r.weight > 0 and r.params["standing_gate_command_name"] == "twist"
+    assert r.params["axis_weights"] == (0.0, 0.0, 1.0, 1.0, 1.0, 0.0) and r.params["nominal_height"] == vs.BODY_NOMINAL_Z
+    assert cfg.rewards["upright"].func.__name__ == "upright_body_cmd_relative" and cfg.rewards["upright"].weight == 2.0
+    assert cfg.rewards["pose"].func.__name__ == "variable_posture_body_relaxed"
+    bc = vs.MicroduckVelStandRlCfg.algorithm.bc_cfg
+    assert tuple(bc["body_slice"]) == (55, 61) and tuple(bc["body_no_teacher_axes"]) == (2,)
+
+
+def test_turn_in_place_mask():
+    from mjlab_microduck.tasks.distill import turn_in_place_mask
+    obs = torch.zeros(4, 61)
+    obs[0, 50] = 0.3                   # turn in place → unanchored
+    obs[1, 48] = 0.2; obs[1, 50] = 0.6  # walking + turning → stays anchored
+    obs[2, 48] = 0.2                   # walking straight
+    assert turn_in_place_mask(obs, (48, 51)).tolist() == [True, False, False, False]
+
+
+def test_yaw_fix_wired():
+    if not vs.ENABLE_YAW_FIX:
+        return
+    cfg = vs.make_microduck_velstand_env_cfg()
+    # stock term untouched (its far-error gradient is what run sape62zb lost), fine term added
+    base = make_microduck_velocity_env_cfg()
+    assert cfg.rewards["track_angular_velocity"].func is base.rewards["track_angular_velocity"].func
+    assert cfg.rewards["track_angular_velocity"].params["std"] == base.rewards["track_angular_velocity"].params["std"]
+    f = cfg.rewards["track_yaw_fine"]
+    assert f.func.__name__ == "track_yaw_rate_fine" and f.weight > 0 and f.params["std"] < base.rewards["track_angular_velocity"].params["std"]
+    tw = cfg.commands["twist"]
+    assert tw.turn_in_place_min_frac == vs.TURN_IN_PLACE_MIN_FRAC and tw.rel_turn_in_place_envs == vs.TURN_IN_PLACE_FRACTION_VELSTAND
+    assert vs.MicroduckVelStandRlCfg.algorithm.bc_cfg["unanchor_turn_in_place"] is True
+
+
+# ── 2026-10 stand-up coverage: wide spawns + head-masked teacher ─────────────
+
+def test_wide_spawns_wired():
+    p = vs.make_microduck_velstand_env_cfg().events["random_prone_init"].params
+    if not vs.ENABLE_WIDE_SPAWNS:
+        assert p.get("so3_prob", 0.0) == 0.0 and p.get("sit_prob", 0.0) == 0.0
+        return
+    assert p["so3_prob"] == vs.WIDE_SO3_PROB and p["sit_prob"] == vs.WIDE_SIT_PROB
+    assert p["sit_params"]["sitting_joint_overrides"] == vs.SIT_JOINT_OVERRIDES
+    # the curriculum stages must not overwrite the coverage params (shallow merge)
+    for st in vs.PRONE_RAMP_STAGES:
+        assert not {"joint_random_prob", "so3_prob", "sit_prob"} & set(st["params"])
+    # total spawn slice stays bounded so walking keeps the majority of resets
+    final = vs.PRONE_RAMP_STAGES[-1]["params"]
+    assert final["prone_prob"] + final["crouch_prob"] + p["sit_prob"] <= 0.75
+
+
+def test_so3_spawns_are_random_orientations_with_random_joints(monkeypatch):
+    torch.manual_seed(0)
+    n = 512
+    env = _SpawnEnv(n)
+    jr_ids = []
+    monkeypatch.setattr(microduck_mdp, "randomize_servo_joints_uniform", lambda e, ids, **k: jr_ids.append(ids.clone()))
+    microduck_mdp.maybe_set_random_prone_orientation(env, torch.arange(n), prone_prob=1.0, prone_z_min=0.07, prone_z_max=0.07,
+                                                    so3_prob=1.0, so3_extra_z=0.04, joint_random_extra_z=0.06)
+    q = env.sim.data.qpos[:, 3:7]
+    assert torch.allclose(q.norm(dim=1), torch.ones(n), atol=1e-5)
+    tilt, _, _ = _tilt_and_axes(q)
+    # uniform on SO(3): cos(tilt) uniform on [-1, 1] → tilt spread over the whole range, not ±90° only
+    assert (tilt < 45).float().mean() > 0.1 and (tilt > 135).float().mean() > 0.1
+    assert len(jr_ids) == 1 and jr_ids[0].numel() == n  # every so3 spawn gets random joints
+    assert torch.allclose(env.sim.data.qpos[:, 2], torch.full((n,), 0.07 + 0.04 + 0.06), atol=1e-6)
+
+
+def test_sit_slice_is_exclusive(monkeypatch):
+    torch.manual_seed(0)
+    n = 2000
+    env = _SpawnEnv(n)
+    got = {}
+    monkeypatch.setattr(microduck_mdp, "set_random_ground_state", lambda e, ids, **k: got.update(ids=ids.clone(), k=k))
+    monkeypatch.setattr(microduck_mdp, "set_random_crouch_state", lambda e, ids, **k: got.update(crouch=ids.clone()))
+    microduck_mdp.maybe_set_random_prone_orientation(env, torch.arange(n), prone_prob=0.4, crouch_prob=0.2, sit_prob=0.1,
+                                                    prone_z_min=0.07, prone_z_max=0.07, sit_params={"sitting_z_min": 0.06})
+    assert abs(got["ids"].numel() / n - 0.1) < 0.03 and got["k"]["sitting_prob"] == 1.0 and got["k"]["sitting_z_min"] == 0.06
+    assert not set(got["ids"].tolist()) & set(got["crouch"].tolist())
+    tilt, _, _ = _tilt_and_axes(env.sim.data.qpos[:, 3:7])
+    assert not set(got["ids"].tolist()) & set(torch.nonzero(tilt > 89).flatten().tolist())  # not also prone
+
+
+def test_expert_input_masks_only_selected_rows():
+    from mjlab_microduck.tasks.distill import expert_input
+    obs = torch.ones(3, 61)
+    out = expert_input(obs, (48, 51), mask_cols=vs.TEACHER_MASK_COLS, mask_rows=torch.tensor([True, False, True]))
+    assert (out[:, 48:51] == 0).all()                       # twist always zeroed for the stand expert
+    assert (out[0, list(vs.TEACHER_MASK_COLS)] == 0).all() and (out[1, list(vs.TEACHER_MASK_COLS)] == 1).all()
+    others = [c for c in range(61) if c not in vs.TEACHER_MASK_COLS and not 48 <= c < 51]
+    assert (out[:, others] == 1).all()                      # ang_vel, gravity, head/body cmds kept
+    assert (obs == 1).all()                                 # input untouched
+
+
+def test_teacher_mask_cols_are_the_joint_blocks():
+    """ang_vel 0:3, gravity 3:6, joint_pos 6:20, joint_vel 20:34, last action 34:48 — mask = all joint state."""
+    assert vs.TEACHER_MASK_COLS == tuple(range(6, 48))
+    cfg = vs.make_microduck_velstand_env_cfg()
+    assert list(cfg.observations["actor"].terms)[:5] == ["base_ang_vel", "projected_gravity", "joint_pos", "joint_vel", "actions"]
+
+
+def test_joint_masked_teacher_wired():
+    bc = vs.MicroduckVelStandRlCfg.algorithm.bc_cfg
+    if vs.ENABLE_JOINT_MASKED_TEACHER:
+        assert tuple(bc["expert_mask_cols"]) == vs.TEACHER_MASK_COLS
+        # masking from the 35° BC gate broke the end of the rise (emulated) — keep it well above
+        assert bc["expert_mask_tilt_deg"] == vs.TEACHER_MASK_TILT_DEG >= 70.0 > bc["gate_tilt_deg"]
+    else:
+        assert not bc.get("expert_mask_cols")
+    assert bc["coef"] == 1.0 and bc["anchor_coef"] == 1.0  # teacher strengths unchanged
+
+
+def test_remap_anchor_yaw_table_lookup():
+    from mjlab_microduck.tasks.distill import remap_anchor_yaw
+    t = vs.ANCHOR_YAW_REMAP
+    obs = torch.zeros(6, 61)
+    obs[:, 48:51] = torch.tensor([[0.0, 0.0, 0.0], [0.0, 0.0, 0.3], [0.0, 0.0, -1.0], [0.2, 0.0, 0.6], [0.15, 0.0, 0.6], [0.3, 0.0, 0.0]])
+    obs[:, 0] = 7.0
+    out = remap_anchor_yaw(obs, (48, 51), t)
+    ti = lambda c: list(t["targets"]).index(c)
+    assert out[0, 50] == 0 and out[5, 50] == 0                                  # standing / straight walking unchanged
+    assert abs(out[1, 50].item() - t["pos"][0][ti(0.3)]) < 1e-5                   # knot hit, in place
+    assert abs(out[2, 50].item() + t["neg"][0][ti(1.0)]) < 1e-5                   # sign kept, own direction table
+    assert abs(out[3, 50].item() - t["pos"][2][ti(0.6)]) < 1e-5
+    mid = 0.5 * (t["pos"][1][ti(0.6)] + t["pos"][2][ti(0.6)])
+    assert abs(out[4, 50].item() - mid) < 1e-5                                   # linear in |v_xy| between knots
+    assert (out[:, :50] == obs[:, :50]).all() and (out[:, 51:] == obs[:, 51:]).all()  # only the yaw command changes
+    assert (obs[:, 50] != out[:, 50]).any() and obs[1, 50] == 0.3               # input untouched
+
+
+def test_anchor_yaw_remap_wired():
+    bc = vs.MicroduckVelStandRlCfg.algorithm.bc_cfg
+    if not vs.ENABLE_ANCHOR_YAW_REMAP:
+        assert not bc.get("anchor_yaw_remap")
+        return
+    assert bc["anchor_yaw_remap"] is vs.ANCHOR_YAW_REMAP and not bc.get("unanchor_turn_in_place")
+    t = vs.ANCHOR_YAW_REMAP
+    for key in ("pos", "neg"):
+        assert len(t[key]) == len(t["lin"]) and all(len(r) == len(t["targets"]) for r in t[key])
+        assert all(list(r) == sorted(r) and r[0] > 0 for r in t[key])            # monotone, never maps a turn to 0
+    cfg = vs.make_microduck_velstand_env_cfg()
+    assert cfg.rewards["track_yaw_fine"].weight > 0 and cfg.commands["twist"].turn_in_place_min_frac == vs.YAW_REMAP_TURN_IN_PLACE_MIN_FRAC

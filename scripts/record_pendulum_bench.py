@@ -318,7 +318,11 @@ def center_zero_reg31(ser, pid, target=2048.0):
 
 
 SETTLE_QUIET_RAD = 0.02      # 稳位判据: |q - q_zero|
-SETTLE_QUIET_VEL = 0.25      # 稳位判据: |dq| [rad/s]
+SETTLE_QUIET_VEL = 0.30      # 稳位判据: |dq| [rad/s]
+# 速度必须用**多拍跨度**差分: 单拍差分(7.3ms)在 ±1 LSB 量化下的噪声地板 ≈ 0.0015/0.0073
+# ≈ 0.21 rad/s, 与 0.25 的旧阈值只差 19% → 摆杆明明已静止却偶发"稳位超时"
+# (2026-09-15 实测: 残余 +0.005 rad 仍报超时)。改用 3 拍跨度(≈22ms) → 噪声 ≈0.07 rad/s。
+SETTLE_VEL_SPAN = 3          # 速度差分跨度 [拍]
 SETTLE_HOLD_S = 0.25         # 需连续满足的时长
 SETTLE_MAX_S = 3.0           # 稳位超时(超过就带残余继续, 并打印警告)
 
@@ -342,7 +346,7 @@ def settle_at_zero(ser, pid, q_zero, r16, safety):
     write_regs(ser, pid, 46, [0xFF, 0x7F])
     t0 = time.time()
     quiet_since = None
-    prev = None
+    hist = []                      # [(q,t), ...] 最近 SETTLE_VEL_SPAN+1 拍
     while time.time() - t0 < SETTLE_MAX_S:
         write_regs(ser, pid, 42, g)
         write_regs(ser, pid, 40, [1])
@@ -350,7 +354,11 @@ def settle_at_zero(ser, pid, q_zero, r16, safety):
         t = time.time()
         if pos is not None:
             q = (((pos - q_zero + 2048) % 4096) - 2048) * LSB_RAD
-            v = abs(q - prev[0]) / max(t - prev[1], 1e-6) if prev else 0.0
+            hist.append((q, t))
+            if len(hist) > SETTLE_VEL_SPAN + 1:
+                hist.pop(0)
+            q0h, t0h = hist[0]
+            v = abs(q - q0h) / max(t - t0h, 1e-6) if len(hist) > 1 else 0.0
             prev = (q, t)
             if abs(q) < SETTLE_QUIET_RAD and v < SETTLE_QUIET_VEL:
                 if quiet_since is None:

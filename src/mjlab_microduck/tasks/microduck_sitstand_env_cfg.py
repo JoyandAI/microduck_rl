@@ -44,7 +44,20 @@ Joint layout (14 actuated joints):
 """
 
 import math
+import os as _os
 from copy import deepcopy
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = _os.environ.get(name)
+    return default if value is None or value == "" else value.strip().lower() in (
+        "1", "true", "yes", "on"
+    )
+
+
+def _env_float(name: str, default: float) -> float:
+    value = _os.environ.get(name)
+    return default if value is None or value == "" else float(value)
 
 # Symmetry
 ENABLE_SYMMETRY = False
@@ -87,7 +100,19 @@ EPISODE_LENGTH_S = 12.0
 POSTURE_DWELL_S  = (3.5, 6.5)
 # Probability a resample commands SIT (vs STAND). 0.5 → all four combinations
 # of (reset state × command) get equal coverage, including both holds.
-SIT_PROB         = 0.5
+# These are intentionally environment overrides rather than a new default
+# curriculum.  R4 first learns the stand endpoint with a neutral head, then
+# restores the original 50/50 reset/command mix while resuming the same policy.
+# The defaults remain the established task recipe.
+SIT_PROB         = _env_float("MICRODUCK_SIT_PROB", 0.5)
+SITTING_INIT_PROB = _env_float("MICRODUCK_SITTING_INIT_PROB", 0.5)
+if not 0.0 <= SIT_PROB <= 1.0:
+    raise ValueError(f"MICRODUCK_SIT_PROB must be in [0, 1], got {SIT_PROB}")
+if not 0.0 <= SITTING_INIT_PROB <= 1.0:
+    raise ValueError(
+        "MICRODUCK_SITTING_INIT_PROB must be in [0, 1], "
+        f"got {SITTING_INIT_PROB}"
+    )
 
 # ── SIT keyframe (joint_pos index → angle in rad). Single fixed target. ─────
 # STABILITY-VERIFIED 2026-07-27 (sit env, scratchpad sweep_sit_pose2.py):
@@ -101,17 +126,55 @@ SIT_PROB         = 0.5
 SITTING_TARGET_OVERRIDES = {
     1:   0.0,      # left  hip_roll   (HOME -0.0873)
     2:  -0.4079,   # left  hip_pitch  (HOME -0.4579; +0.05 = slight fwd lean)
-    3:   1.35,     # left  knee       (HOME -0.0049)
+    3:   1.35,     # left  knee       (HOME 0)
     4:   0.0,      # left  ankle      (HOME +0.4530)
     # neck/head intentionally omitted → steered by the head_pose command.
     10:  0.0,      # right hip_roll   (HOME +0.0873)
     11:  0.4079,   # right hip_pitch  (HOME +0.4579)
-    12: -1.35,     # right knee       (HOME +0.0049)
+    12: -1.35,     # right knee       (HOME 0)
     13:  0.0,      # right ankle      (HOME -0.4530)
 }
 
 _LEG_JOINTS  = [0, 1, 2, 3, 4, 9, 10, 11, 12, 13]
 _NECK_JOINTS = [5, 6, 7, 8]
+_NECK_JOINT_NAMES = ("neck_pitch", "head_pitch", "head_yaw", "head_roll")
+
+# ── 头部姿态 L1（2026-09-16，实测后新增）─────────────────────────────────────
+# 为什么需要它（实测见 docs/q1_q2_root_cause_2026-09-16.md §5.1c 与
+# scripts/probe_sitstand_head_terms.py）：三脚架修好后，策略**仍然**把 neck_pitch
+# 停在硬限位（差 110°）、头高从 162 掉到 147 mm，而**两个已有的头部项都拉不动它**：
+#   * head_pose_tracking = mean_j exp(−(err_j/std)²) —— 对 4 个关节取**均值**（docstring
+#     写明是为了"单个关节坏了别把整项打死"）。副作用是相反方向的失效：3 个关节跟得好时，
+#     脖子差 110° 只让该项 1.0 → 0.667，只收 0.25/步 ⇒ **对"单一关节停死"近乎失明**。
+#   * posture_composite 的头因子 = exp(−mean(err²)/head_std²) **看得见**脖子（0.0021），
+#     但它是**乘性**的，把自己的梯度也乘没了：∂/∂neck ≈ −2·err/σ²·head_factor·其余因子·w
+#     ≈ **−0.09 /rad**。脖子挪 0.2 rad 只值 0.018/步，**低于 PPO 优势估计的噪声底**。
+#     那 +1.8/步的余量**存在但不可达**（正是仓库已记录的"高斯基死在尾部"）。
+# ⇒ 修法不是调大权重、也不是调 std，而是给一个**在大误差处梯度不消失**的形式：
+#   对头关节**求和**的 L1（不是取均值），只在 STAND 静息时生效（过渡期保留用头辅助的自由）。
+ENABLE_HEAD_L1 = _env_bool("MICRODUCK_HEAD_L1", False)
+# 标定：静息时 L1 和 = |−1.93| − 0.10 ≈ 1.83 rad ⇒ 权重 1.0 时罚 −1.83/步，
+# 而展开脖子可拿回约 +1.8(composite) + 0.25(tracking) = +2.05/步
+# ⇒ 摆动 ≈ 3.9/步（约总奖励 10.3/步的 38%），梯度 −1.0/rad 是 composite 现状的 11 倍。
+HEAD_L1_WEIGHT = 1.0
+HEAD_L1_DEADBAND = 0.10
+
+# ── Head-tripod rest fix (2026-09-16) ────────────────────────────────────────
+# The posture ramp is POSTURE_RAMP_S = 2 s and `alpha` slews the setpoint; the
+# command is a binary flag, so "the ramp has settled" is |flag - alpha| < eps.
+RAMP_DONE_EPS = 0.02
+# Load below this is a light brush, not support: the feet carry 4.7 N in the
+# tripod pose and the head carries 3.16 N, so 0.5 N is unambiguously "resting on
+# the head" while ignoring incidental contact during a wobbly stand.
+HEAD_GROUND_FORCE_THRESHOLD_N = 0.5
+# Weight calibration: the tripod's measured advantage is +3.69/step against a
+# ~3.16 N head load, so ~1.4 /N flips it. Ramp 0 -> target over 300 iters of env
+# steps (the same "no attempt-tax while a skill is still being discovered" rule
+# the rest of this file follows, and by then the rise is long since learned).
+HEAD_GROUND_WEIGHT = 1.4
+NECK_LIMIT_PROXIMITY_MARGIN = 0.20   # rad of "keep out" band before the hard stop
+NECK_LIMIT_PROXIMITY_WEIGHT = -1.0
+HEAD_FIX_RAMP_ITERS = 300
 
 # Trunk height targets (m) — both MEASURED in sim, never carried across robot
 # or keyframe changes (sit run-1 / standup lessons).
@@ -143,6 +206,24 @@ POSTURE_RAMP_S = 2.0
 # has been discovered — see the rise_speed_weight curriculum.
 MAX_DESCENT_SPEED = 0.05
 MAX_RISE_SPEED    = 0.08
+
+# ── Seated fall-back hardening (2026-10) ──────────────────────────────────────
+# Real robot: an abrupt head move while seated tips it BACKWARD; it stays
+# leaned ~30° in the sit pose and the neck servo overloads. Sim battery
+# (claude_experiments/sitstand_head_bench.py, r78hyhck@1250): fast head
+# wiggles / pitch-down+yaw jumps tip 30-45% of seated robots, none recover,
+# neck |τ| 0.13-0.19 Nm vs 0.02 calm. A backward kick of |ω| ≈ 3 rad/s leaves
+# 69% stuck leaned (claude_experiments/sitstand_tip_probe.py), ≥ 4 rad/s
+# flops to ~65° on the back. Training had neither fast head commands (the
+# head command only resamples every few s) nor any leaned-back seated state.
+#  - seated_head_jerk: abrupt head-command jumps / sign flips while seated.
+#  - seated_tip: backward pitch kicks while seated → recovery frontier.
+#  - neck_strain_leaned: neck torque cost while leaned BACK in the sit.
+# Both events are introduced by curriculum only once the sit exists (the
+# push-ramp lesson: perturbing an unconsolidated transition unlearns it).
+ENABLE_SEATED_FALLBACK_HARDENING = True
+SEATED_HEAD_JERK_INTERVAL_S = (0.3, 0.8)
+SEATED_TIP_INTERVAL_S       = (3.0, 6.0)
 
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs.mdp import dr
@@ -203,10 +284,24 @@ def make_microduck_sitstand_env_cfg(
         num_slots=1,
     )
 
-    # NOTE: no head-ground contact penalty here (unlike the sit env). Using the
-    # head as a third support point during transitions is explicitly allowed —
-    # the plank-as-terminal-rest exploit is anti-selected by posture_composite
-    # + posture_stillness instead (both ≈0 at plank tilt/height).
+    # NOTE: the SIT env penalises head-ground contact; this env deliberately did
+    # NOT, so that the head could be used as a third support point during a
+    # transition. That freedom was right, but it also left the head-tripod REST
+    # pose unpriced — and the policy parked there (see `head_ground` below and
+    # docs/policy_failure_analysis.md §8). The fix is not to re-add a blanket
+    # contact penalty; it is to price the LOAD only once the posture ramp has
+    # settled (`mdp.posture_head_ground_penalty`), so the manoeuvre stays free.
+    head_ground_cfg = ContactSensorCfg(
+        name="head_ground_contact",
+        # jaw_soft carries the head collision geoms (top_head_shell = the flat
+        # top, jaw, bottom_head_shell) in robot_allcollisions.xml — same primary
+        # as the roulade env's head pivot sensor.
+        primary=ContactMatch(mode="body", pattern="jaw_soft", entity="robot"),
+        secondary=ContactMatch(mode="body", pattern="terrain"),
+        fields=("found", "force"),
+        reduce="netforce",
+        num_slots=1,
+    )
 
     foot_frictions_geom_names = ("left_foot_collision", "right_foot_collision")
 
@@ -216,7 +311,7 @@ def make_microduck_sitstand_env_cfg(
     # Standup robot variant: full collision meshes — the body must physically
     # rest on the ground while seated, and knees/head may touch mid-transition.
     cfg.scene.entities = {"robot": MICRODUCK_STANDUP_ROBOT_CFG}
-    cfg.scene.sensors  = (feet_ground_cfg, self_collision_cfg)
+    cfg.scene.sensors  = (feet_ground_cfg, self_collision_cfg, head_ground_cfg)
     cfg.viewer.body_name = "trunk_base"
 
     cfg.episode_length_s = EPISODE_LENGTH_S
@@ -468,6 +563,65 @@ def make_microduck_sitstand_env_cfg(
         },
     )
 
+    # ── Head-tripod terminal rest: price the LOAD, once the rise has settled ──
+    # The measured exploit (docs/policy_failure_analysis.md §8): the standing rest
+    # is head-planted, head-ground force 3.16 N = 37 % of body weight, and that
+    # pose beats an upright stand by +3.69/step because the two trunk-HEIGHT terms
+    # saturate in it while the only objecting term (the multiplicative
+    # posture_composite) is too light to outbid them. head_pose_bias is worth
+    # -0.00084/step there, i.e. 0.1 % of the gap — turning its weight up ~1000x
+    # would wreck every other term instead.
+    #
+    # So remove the SUPPORT, not the symptom: charge the vertical load the head
+    # carries, and only while STAND is commanded AND the 2 s posture ramp has
+    # settled (|flag - alpha| < ramp_eps). Mid-transition head assist — which this
+    # env deliberately allows and which the rise genuinely uses — is untouched.
+    #
+    # Returns <= 0 -> POSITIVE weight. Calibration: the tripod's advantage is
+    # +3.69/step and it loads the head with ~3.16 N, so a weight near
+    # (3.69 / (3.16 - 0.5)) ~= 1.4 /N makes the tripod net-negative. Start at 0
+    # and ramp (discovery-vs-refinement timing, same as every other tax here).
+    cfg.rewards["head_ground"] = RewardTermCfg(
+        func=microduck_mdp.posture_head_ground_penalty,
+        weight=0.0,  # ramped by head_ground_weight curriculum below
+        params={
+            "sensor_name":       head_ground_cfg.name,
+            "command_name":      "twist",
+            "ramp_eps":          RAMP_DONE_EPS,
+            "force_threshold_n": HEAD_GROUND_FORCE_THRESHOLD_N,
+            "use_normal_force":  True,
+        },
+    )
+
+    # Neck/head joints parked on their HARD stops. Measured on the delivered
+    # policy: neck_pitch sits at -1.583 rad against a hard lower limit of
+    # -1.5708 rad, in every phase. The stock dof_pos_limits term only fires past
+    # the soft limit (last ~7.5 % of range) and only by the overshoot magnitude,
+    # so it reads ~0 for a joint parked ON the stop. Returns >= 0 -> NEGATIVE
+    # weight. Same gate: only the standing rest is priced.
+    cfg.rewards["neck_limit_proximity"] = RewardTermCfg(
+        func=microduck_mdp.joint_limit_proximity_standing,
+        weight=0.0,  # ramped by head_ground_weight curriculum below
+        params={
+            "command_name": "twist",
+            "ramp_eps":     RAMP_DONE_EPS,
+            "margin":       NECK_LIMIT_PROXIMITY_MARGIN,
+            "asset_cfg":    SceneEntityCfg("robot", joint_names=_NECK_JOINT_NAMES),
+        },
+    )
+
+    # 头部姿态 L1（见常量区注释）。返回 ≤0 ⇒ 正权重。默认关，供受控 A/B。
+    if ENABLE_HEAD_L1:
+        cfg.rewards["head_pose_l1"] = RewardTermCfg(
+            func=microduck_mdp.head_pose_error_l1_standing,
+            weight=0.0,  # ramped by head_l1_weight curriculum
+            params={
+                "command_name": "head_pose",
+                "ramp_eps":     RAMP_DONE_EPS,
+                "deadband":     HEAD_L1_DEADBAND,
+            },
+        )
+
     # ── Sim2real regularisers — MATCHED to velocity ─────────────────────────
     # velocity's exact set and absolute weights:
     #   • action_rate_l2: -0.1 at stage 0, ramped -0.1 → -1.0 by iter 1500
@@ -487,6 +641,22 @@ def make_microduck_sitstand_env_cfg(
     cfg.rewards["body_ang_vel"].weight = -0.05      # velocity value
     cfg.rewards["angular_momentum"].weight = -0.02  # velocity value
     cfg.rewards.pop("soft_landing", None)           # velocity removes it
+
+    # Neck strain while leaned BACK in the sit (the overload symptom). Cost
+    # function (≥ 0) → negative weight. ≈ -1.1/step at overload torque
+    # (0.15 Nm → (0.15/0.1)² = 2.25), zero when upright / standing / rising /
+    # leaning forward, so it never taxes sit or rise discovery → on from 0.
+    if ENABLE_SEATED_FALLBACK_HARDENING:
+        cfg.rewards["neck_strain_leaned"] = RewardTermCfg(
+            func=microduck_mdp.neck_torque_when_tilted,
+            weight=-0.5,
+            params={
+                "command_name":   "twist",
+                "tilt_start_deg": 12.0,
+                "tilt_full_deg":  25.0,
+                "torque_scale":   0.1,
+            },
+        )
 
     cfg.rewards["self_collisions"] = RewardTermCfg(
         func=mdp.self_collision_cost,
@@ -655,8 +825,8 @@ def make_microduck_sitstand_env_cfg(
         params={
             "face_down_prob":          0.0,
             "face_up_prob":            0.0,
-            "sitting_prob":            0.5,
-            "standing_prob":           0.5,
+            "sitting_prob":            SITTING_INIT_PROB,
+            "standing_prob":           1.0 - SITTING_INIT_PROB,
             "sitting_joint_overrides": SITTING_TARGET_OVERRIDES,
             "sitting_joint_noise_std": 0.10,           # ≈ 6° per joint
             "sitting_tilt_max":        math.radians(8),
@@ -689,6 +859,26 @@ def make_microduck_sitstand_env_cfg(
                     "y": VELOCITY_PUSH_RANGE,
                 },
                 "asset_cfg": SceneEntityCfg("robot"),
+            },
+        )
+
+    if ENABLE_SEATED_FALLBACK_HARDENING:
+        # Both start disabled (prob 0 / zero kick) and are ramped by the
+        # seated_head_jerk_prob / seated_tip_range curricula below.
+        cfg.events["seated_head_jerk"] = EventTermCfg(
+            func=microduck_mdp.seated_head_command_jerk,
+            mode="interval",
+            interval_range_s=SEATED_HEAD_JERK_INTERVAL_S,
+            params={"prob": 0.0, "flip_frac": 0.5},
+        )
+        cfg.events["seated_tip"] = EventTermCfg(
+            func=microduck_mdp.seated_backward_tip,
+            mode="interval",
+            interval_range_s=SEATED_TIP_INTERVAL_S,
+            params={
+                "ang_vel_range": (0.0, 0.0),
+                "prob":          0.5,
+                "lateral_frac":  0.3,
             },
         )
 
@@ -904,6 +1094,37 @@ def make_microduck_sitstand_env_cfg(
         },
     )
 
+    # Seated fall-back hardening ramps — after the sit/rise exist (the
+    # sitstand recipe has both by ~1250) and alongside the head range
+    # reaching its full width (2000). Tip kicks ramp from "mostly catchable"
+    # (≤ 3 rad/s) to "flops onto the back" (4 rad/s) so the policy learns
+    # the catch first, then the recovery. If a seated metric steps DOWN at
+    # these boundaries, stretch them — never earlier.
+    if ENABLE_SEATED_FALLBACK_HARDENING:
+        cfg.curriculum["seated_head_jerk_prob"] = CurriculumTermCfg(
+            func=microduck_mdp.event_param_curriculum,
+            params={
+                "event_name": "seated_head_jerk",
+                "param_stages": [
+                    {"step": 0,         "params": {"prob": 0.0}},
+                    {"step": 1500 * 24, "params": {"prob": 0.2}},
+                    {"step": 2000 * 24, "params": {"prob": 0.4}},
+                ],
+            },
+        )
+        cfg.curriculum["seated_tip_range"] = CurriculumTermCfg(
+            func=microduck_mdp.event_param_curriculum,
+            params={
+                "event_name": "seated_tip",
+                "param_stages": [
+                    {"step": 0,         "params": {"ang_vel_range": (0.0, 0.0)}},
+                    {"step": 1500 * 24, "params": {"ang_vel_range": (1.0, 2.5)}},
+                    {"step": 2000 * 24, "params": {"ang_vel_range": (1.5, 3.25)}},
+                    {"step": 2500 * 24, "params": {"ang_vel_range": (2.0, 4.0)}},
+                ],
+            },
+        )
+
     # Torque-rate anti-jitter — phased in once both transition motions exist.
     cfg.curriculum["torque_rate_weight"] = CurriculumTermCfg(
         func=microduck_mdp.reward_weight,
@@ -932,6 +1153,30 @@ def make_microduck_sitstand_env_cfg(
             ],
         },
     )
+
+    # Head-tripod fix (2026-09-16) — both terms ramp 0 -> target once the rise is
+    # long since discovered (it appears at 2000-4000 iters; see the queue doc §8).
+    cfg.curriculum["head_ground_weight"] = CurriculumTermCfg(
+        func=microduck_mdp.staged_reward_weight_ramp,
+        params={
+            "ramp_steps": HEAD_FIX_RAMP_ITERS * 24,
+            "stages": [
+                {"reward_name": "head_ground", "weight": HEAD_GROUND_WEIGHT},
+                {"reward_name": "neck_limit_proximity",
+                 "weight": NECK_LIMIT_PROXIMITY_WEIGHT},
+            ],
+        },
+    )
+
+    # 头部 L1 权重课程：0 → 目标，300 迭代（与其它尝试税同样的"摸索期不上税"）
+    if ENABLE_HEAD_L1:
+        cfg.curriculum["head_l1_weight"] = CurriculumTermCfg(
+            func=microduck_mdp.staged_reward_weight_ramp,
+            params={
+                "ramp_steps": HEAD_FIX_RAMP_ITERS * 24,
+                "stages": [{"reward_name": "head_pose_l1", "weight": HEAD_L1_WEIGHT}],
+            },
+        )
 
     return cfg
 

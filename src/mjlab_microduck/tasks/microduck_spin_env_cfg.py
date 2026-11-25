@@ -227,6 +227,14 @@ def make_microduck_spin_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg.events["reset_action_history"] = EventTermCfg(
         func=microduck_mdp.reset_action_history, mode="reset",
     )
+    # BAM 每步把摩擦预算写进每-world 的 dof_frictionloss/dof_damping,而 mjlab 只会展开
+    # 事件函数用 requires_model_fields 声明过的字段。没有这个 startup 事件时 bam 直接抛
+    # RuntimeError("...are not expanded per world") —— 本任务在 2026-09-11 之前根本起不来。
+    # 【任何独立编写的环境都必须注册它】(见 mdp.expand_bam_friction_fields)。
+    cfg.events["expand_bam_friction_fields"] = EventTermCfg(
+        func=microduck_mdp.expand_bam_friction_fields,
+        mode="startup",
+    )
     del cfg.events["foot_friction"]
 
     if ENABLE_VELOCITY_PUSHES:

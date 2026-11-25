@@ -1,0 +1,4 @@
+# Batch files must keep CRLF on every platform: cmd.exe's parser can
+# misbehave on goto/labels with bare-LF line endings, and Git-Bash users
+# on Linux checkouts with autocrlf=false would otherwise get LF files.
+*.bat text eol=crlf

@@ -145,17 +145,17 @@ HOME_POSE_WIRE = np.array([
     0.0,           # left_hip_yaw
     -0.0873,       # left_hip_roll
     -0.4579,       # left_hip_pitch
-    -0.0049,       # left_knee
+    0.0,           # left_knee
     0.4530,        # left_ankle
-    0.3491,        # neck_pitch
-    0.3491,        # head_pitch
+    0.3491,        # neck_pitch (20 deg)
+    0.3491,        # head_pitch (20 deg)
     0.0,           # head_yaw
     0.0,           # head_roll
     0.0,           # mouth
     0.0,           # right_hip_yaw
     0.0873,        # right_hip_roll
     0.4579,        # right_hip_pitch
-    0.0049,        # right_knee
+    0.0,           # right_knee
     -0.4530,       # right_ankle
 ], dtype=np.float64)
 

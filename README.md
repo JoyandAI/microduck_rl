@@ -206,6 +206,16 @@ uv run publish --onnx output.onnx --repo <user>/microduck-flamingo \
 # A new gait for a slot
 uv run publish --onnx output.onnx --repo <user>/microduck-my-walk --kind perpetual --slot walk
 
+# Ship a rollout video too: uploaded as replay.mp4, which the Hub's replay widget plays
+uv run scripts/render_policy.py output.onnx --seconds 10 --video media/bow.mp4
+uv run publish --onnx output.onnx --repo <user>/microduck-bow --kind episodic --duration-s 4.0 \
+    --video media/bow.mp4
+
+# A remix (warm-started / fine-tuned from someone's published policy): name the parent so the
+# model card sets `base_model` and the Hub links the two
+uv run publish --onnx output.onnx --repo <user>/microduck-deep-bow --kind episodic --duration-s 5.0 \
+    --base-model <owner>/microduck-polite-bow
+
 # See what would be uploaded without touching the Hub
 uv run publish --onnx output.onnx --repo <user>/microduck-bow --kind episodic --duration-s 4.0 --dry-run
 ```
@@ -259,5 +269,9 @@ joint-index mappings, reward sign conventions, and NaN guards.
 
 ## License
 
-This project is licensed under the Apache 2.0 License. See the [LICENSE](LICENSE) file for details.
-3D model files are licensed under Creative Commons BY-SA-NC.
+The code in this repository is licensed under the Apache License 2.0. See the [LICENSE](LICENSE) file for details.
+
+The 3D model files (the `.stl` meshes in `src/mjlab_microduck/robot/microduck/assets/`
+and `src/mjlab_microduck/robot/xl330_test_bench/assets/`) are licensed under
+[Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0)](https://creativecommons.org/licenses/by-nc-sa/4.0/).
+See [LICENSE-MODELS.md](LICENSE-MODELS.md) for the exact scope and attribution.

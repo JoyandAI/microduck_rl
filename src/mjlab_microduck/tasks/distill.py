@@ -79,6 +79,45 @@ def default_bc_cfg() -> dict:
         "anchor_checkpoint_path": None,
         "anchor_coef": 1.0,
         "anchor_tilt_deg": 25.0,
+        # Body-control routing (2026-10, branch improve_velstand2). When body_slice is set,
+        # STANDING frames (twist obs exactly 0) with a non-zero body command on
+        # body_active_axes are taken off the walk anchor (the walk expert ignores body
+        # commands and would pin them to a level stance). Of those, frames whose
+        # body_no_teacher_axes are all zero (tilt-only) are taught by the stand expert,
+        # which tracks roll/pitch (9.2-9.5° for 10° commanded); frames commanding any of
+        # body_no_teacher_axes (z: the stand expert does not crouch) are left to PPO.
+        # The command is in the obs, so these frames are separable — unlike the
+        # rise-catch / push-stumble split that leaked in run rqunethx.
+        "body_slice": None,
+        # Turn-in-place frames (linear command exactly 0, |yaw command| > 0) are taken
+        # off the walk anchor: alpha_walking stands still below ~0.6 rad/s (the dead zone
+        # being trained out), and coef-1.0 BC pinned every earlier yaw fix. Separable:
+        # the command is in the obs.
+        "unanchor_turn_in_place": False,
+        # Teacher-side yaw remap (2026-10-12, branch improve_standup_velstand). The walk
+        # anchor has a yaw dead zone (in place: fed 0.6 → 0.0 rad/s, 1.0 → ~0.25; walking
+        # ≈ 0.6 × the command) and coef-1.0 BC copies it into every student. Unanchoring
+        # turn frames lost turning twice (sape62zb, brkpcnn8: PPO does not discover slow
+        # turning), but the anchor turns monotonically when fed a bigger yaw. So the anchor
+        # is fed the yaw command that makes IT achieve the student's commanded rate,
+        # looked up in a table calibrated on the anchor itself
+        # (claude_experiments/calibrate_walk_yaw.py): {"lin": |v_xy| knots, "targets":
+        # |wz| knots, "pos"/"neg": fed |wz| per (lin, target)}. A pure function of the obs,
+        # so labels stay consistent; zero yaw (standing, straight walking) is unchanged.
+        "anchor_yaw_remap": None,
+        "body_active_axes": (2, 3, 4),
+        "body_no_teacher_axes": (2,),
+        # Flat actor-obs columns ZEROED in the stand expert's input on fallen frames (tilt >
+        # gate_tilt_deg; never on body-control frames). Zero = HOME for joint_pos_rel / zero
+        # velocity / zero last action. 2026-10 (branch improve_standup_velstand): alpha_stand
+        # freezes on its back in a fixed point it reads off its own joints, and the student copies
+        # it. Masking only the head moved the freeze (run s4jdgkux); masking every joint col
+        # (6:48) above 75° makes the label the HOME-pose rise, which gets the teacher up from
+        # random-joint / random-orientation / sitting starts and rescues 98-99 % of the student's
+        # stuck states (emulated). A pure function of the obs, so labels stay consistent. Masking
+        # from the 35° BC gate broke the END of the rise (the expert needs its joints there).
+        "expert_mask_cols": (),
+        "expert_mask_tilt_deg": 75.0,
     }
 
 
@@ -98,10 +137,83 @@ def fallen_mask_from_obs(obs: torch.Tensor, gravity_slice: tuple[int, int], gate
     return cos_tilt < torch.cos(torch.deg2rad(torch.tensor(gate_tilt_deg, device=obs.device)))
 
 
-def expert_input(obs: torch.Tensor, twist_slice: tuple[int, int]) -> torch.Tensor:
+def turn_in_place_mask(obs: torch.Tensor, twist_slice: tuple[int, int], eps: float = 1e-6) -> torch.Tensor:
+    """Linear command exactly 0 and a non-zero yaw command (command obs carry no noise)."""
+    tw = obs[:, twist_slice[0]:twist_slice[1]]
+    return (tw[:, :2].abs().amax(dim=1) <= eps) & (tw[:, 2].abs() > eps)
+
+
+def body_frame_masks(
+    obs: torch.Tensor, twist_slice: tuple[int, int], body_slice: tuple[int, int],
+    active_axes: tuple[int, ...], no_teacher_axes: tuple[int, ...], eps: float = 1e-6,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """(body frames → off the walk anchor, teach frames → stand expert). Command obs carry
+    no noise, so "twist == 0" and "axis == 0" are exact tests."""
+    standing = obs[:, twist_slice[0]:twist_slice[1]].abs().amax(dim=1) <= eps
+    body = obs[:, body_slice[0]:body_slice[1]]
+    active = body[:, list(active_axes)].abs().amax(dim=1) > eps
+    frames = standing & active
+    if no_teacher_axes:
+        frames_teach = frames & (body[:, list(no_teacher_axes)].abs().amax(dim=1) <= eps)
+    else:
+        frames_teach = frames
+    return frames, frames_teach
+
+
+def expert_input(
+    obs: torch.Tensor, twist_slice: tuple[int, int],
+    mask_cols: tuple[int, ...] = (), mask_rows: torch.Tensor | None = None,
+) -> torch.Tensor:
     out = obs.clone()
     out[:, twist_slice[0]:twist_slice[1]] = 0.0
+    if mask_cols and mask_rows is not None and mask_rows.any():
+        cols = torch.as_tensor(mask_cols, device=obs.device, dtype=torch.long)
+        rows = mask_rows.nonzero().flatten()
+        out[rows.unsqueeze(1), cols.unsqueeze(0)] = 0.0
     return out
+
+
+def _interp_rows(x: torch.Tensor, xp: torch.Tensor, fp: torch.Tensor) -> torch.Tensor:
+    """Piecewise-linear interpolation of x (n,) on knots xp (K,) for per-row values fp (n, K); x clamped to the knots."""
+    x = x.clamp(xp[0], xp[-1])
+    hi = torch.searchsorted(xp, x, right=True).clamp(1, xp.numel() - 1)
+    lo = hi - 1
+    w = (x - xp[lo]) / (xp[hi] - xp[lo])
+    return fp.gather(1, lo.unsqueeze(1)).squeeze(1) * (1 - w) + fp.gather(1, hi.unsqueeze(1)).squeeze(1) * w
+
+
+def remap_anchor_yaw(obs: torch.Tensor, twist_slice: tuple[int, int], table: dict) -> torch.Tensor:
+    """Copy of the flat obs with the yaw command replaced by the one the walk anchor needs to
+    actually turn at that rate (bilinear in |v_xy| and |wz|, sign kept, 0 → 0)."""
+    out = obs.clone()
+    tw = obs[:, twist_slice[0]:twist_slice[1]]
+    wz = tw[:, 2]
+    lin = tw[:, :2].norm(dim=1)
+    dev = obs.device
+    lk = torch.as_tensor(table["lin"], dtype=obs.dtype, device=dev)
+    tk = torch.as_tensor([0.0, *table["targets"]], dtype=obs.dtype, device=dev)
+    fed = torch.zeros_like(wz)
+    for key, sign in (("pos", 1.0), ("neg", -1.0)):
+        rows = (wz * sign) > 0
+        if not rows.any():
+            continue
+        grid = torch.as_tensor([[0.0, *r] for r in table[key]], dtype=obs.dtype, device=dev)  # (L, K)
+        c = wz[rows].abs()
+        n = c.numel()
+        per_lin = torch.stack([_interp_rows(c, tk, grid[i].expand(n, -1)) for i in range(lk.numel())], dim=1)  # (n, L)
+        fed[rows] = sign * _interp_rows(lin[rows], lk, per_lin)
+    out[:, twist_slice[0] + 2] = fed
+    return out
+
+
+def _with_flat(td: TensorDict, groups: list[str], flat: torch.Tensor) -> TensorDict:
+    """Rebuild the obs groups of ``td`` from a modified flat obs."""
+    off = 0
+    for g in groups:
+        d = td[g].shape[-1]
+        td[g] = flat[:, off:off + d]
+        off += d
+    return td
 
 
 def load_expert_from(actor: torch.nn.Module, state_dict: dict) -> torch.nn.Module:
@@ -160,7 +272,21 @@ class PpoWithExpertBc(PPO):
         gsl = tuple(cfg["gravity_slice"])
         fallen = fallen_mask_from_obs(flat, gsl, cfg["gate_tilt_deg"])
         upright = ~fallen_mask_from_obs(flat, gsl, cfg["anchor_tilt_deg"]) if self.anchor is not None else torch.zeros_like(fallen)
-        stats = {"expert_bc_fallen_frac": fallen.float().mean().item(), "expert_bc_anchor_frac": upright.float().mean().item()}
+        body_teach = torch.zeros_like(fallen)
+        if cfg.get("body_slice") is not None:
+            body_frames, body_teach = body_frame_masks(flat, tuple(cfg["twist_slice"]), tuple(cfg["body_slice"]),
+                                                       tuple(cfg["body_active_axes"]), tuple(cfg["body_no_teacher_axes"]))
+            upright = upright & ~body_frames
+            body_teach = body_teach & ~fallen
+        turn_free = torch.zeros_like(fallen)
+        if cfg.get("unanchor_turn_in_place"):
+            turn_free = turn_in_place_mask(flat, tuple(cfg["twist_slice"]))
+            upright = upright & ~turn_free
+        stats = {"expert_bc_fallen_frac": fallen.float().mean().item(), "expert_bc_anchor_frac": upright.float().mean().item(),
+                 "expert_bc_body_teach_frac": body_teach.float().mean().item(),
+                 "expert_bc_turn_free_frac": turn_free.float().mean().item()}
+        tilted = fallen_mask_from_obs(flat, gsl, cfg.get("expert_mask_tilt_deg", 75.0)) & fallen  # expert_mask_cols rows
+        fallen = fallen | body_teach
         if fallen.sum().item() < cfg["min_samples"]:
             fallen = torch.zeros_like(fallen)  # too few fallen frames: anchor-only pass (or nothing)
         use = fallen | upright
@@ -170,21 +296,24 @@ class PpoWithExpertBc(PPO):
             return stats
         obs_td = obs_td[idx]
         fallen = fallen[idx]
+        tilted = tilted[idx]
         weight = torch.where(fallen, torch.full_like(fallen, cfg["coef"], dtype=torch.float),
                              torch.full_like(fallen, cfg.get("anchor_coef", 0.0), dtype=torch.float))
         with torch.no_grad():
             target = torch.zeros(idx.numel(), self.storage.actions.shape[-1], device=self.device)
             if fallen.any():
                 exp_td = obs_td[fallen].clone()
-                exp_flat = expert_input(torch.cat([exp_td[g] for g in groups], dim=-1), tuple(cfg["twist_slice"]))
-                off = 0
-                for g in groups:  # rebuild the groups from the twist-zeroed flat obs
-                    d = exp_td[g].shape[-1]
-                    exp_td[g] = exp_flat[:, off:off + d]
-                    off += d
-                target[fallen] = self.expert(exp_td)
+                exp_flat = expert_input(torch.cat([exp_td[g] for g in groups], dim=-1), tuple(cfg["twist_slice"]),
+                                        tuple(cfg.get("expert_mask_cols", ())), tilted[fallen])
+                target[fallen] = self.expert(_with_flat(exp_td, groups, exp_flat))
             if (~fallen).any():
-                target[~fallen] = self.anchor(obs_td[~fallen])
+                anc_td = obs_td[~fallen]
+                if cfg.get("anchor_yaw_remap"):
+                    anc_td = anc_td.clone()
+                    anc_flat = remap_anchor_yaw(torch.cat([anc_td[g] for g in groups], dim=-1), tuple(cfg["twist_slice"]),
+                                                cfg["anchor_yaw_remap"])
+                    anc_td = _with_flat(anc_td, groups, anc_flat)
+                target[~fallen] = self.anchor(anc_td)
         n = idx.numel()
         mb = max(cfg.get("min_mini_batch", 1), n // cfg["mini_batches"])
         total = 0.0
