@@ -206,23 +206,7 @@ fi
 # --- is the repo itself installed? (you install it; this only reminds and gates --train) ---
 HAS_PACKAGE=$("$PYTHON" -c 'from importlib.util import find_spec; print(int(find_spec("mjlab_microduck") is not None))')
 if [ "$HAS_PACKAGE" = 1 ]; then
-  "$PYTHON" - "$TASK" "$DO_TRAIN" <<'PY'
-import sys
-from importlib.metadata import entry_points
-
-from mjlab.tasks.registry import list_tasks
-
-# mjlab catches plugin import errors; surface the original traceback here.
-for plugin in entry_points(group="mjlab.tasks", name="mjlab_microduck"):
-    plugin.load()
-task = sys.argv[1]
-if task in list_tasks():
-    print(f"task registered OK: {task}")
-else:
-    print(f"{task} missing from the registry; check available tasks with uv run --no-sync list-envs", file=sys.stderr)
-    if sys.argv[2] == "1":
-        sys.exit(1)
-PY
+  "$PYTHON" scripts/check_openmd_training.py --registered-task "$TASK"
 else
   echo
   echo "NOTE: the repo itself is not installed in the venv yet. Install it with:"

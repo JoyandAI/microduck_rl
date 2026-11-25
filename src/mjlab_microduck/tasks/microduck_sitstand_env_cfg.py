@@ -1233,7 +1233,9 @@ def configure_openmd_standing_support(cfg: ManagerBasedRlEnvCfg) -> None:
         reduce="netforce",
         num_slots=1,
     )
-    cfg.scene.sensors = (*cfg.scene.sensors, head_ground)
+    cfg.scene.sensors = tuple(
+        sensor for sensor in cfg.scene.sensors if sensor.name != head_ground.name
+    ) + (head_ground,)
     cfg.rewards["head_ground"] = RewardTermCfg(
         func=microduck_mdp.posture_head_ground_penalty,
         weight=0.0,
