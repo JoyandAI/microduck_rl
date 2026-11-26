@@ -172,7 +172,7 @@ play "$TASK" --checkpoint-file "$PT" --viewer native --device cpu --num-envs 1
 
 网页脚本默认使用 Viser 和端口 8081。两个入口都由 mjlab 根据任务 ID 构造回放环境、载入策略，再选择显示后端。对照时记录前进、侧移、转向指令，以及网页 Commands 面板是否启用手动控制。两次独立启动可能抽到不同的初始状态或随机化参数。单次观感不足以定位偏差。[网页回放入口](../scripts/play_web.py)
 
-如果另一条命令是 `scripts/infer_policy.py`，它运行的是导出的 ONNX 和独立的 CPU MuJoCo 场景。先核对 ONNX 来自同一检查点，再核对 61 维观测模式、场景 XML（含是否带关节间隙）、HOME、舵机模型、动作倍率和输入指令。反馈问题时请附两条完整命令、源码版本及权重文件名或哈希，注明是否已上机。
+如果另一条命令是 `scripts/infer_policy.py`，它在独立的 CPU MuJoCo 场景运行导出的 ONNX。标准 OpenMD 起立策略的命令见下文。反馈两种回放的差异时，请附任务名、两条完整命令、源码版本、起始姿态及权重文件名或哈希。
 
 #### Windows PowerShell 回放
 
@@ -194,5 +194,18 @@ python scripts/check_openmd_training.py --onnx "$OUT"
 ```
 
 使用仓库的[导出入口](../scripts/export.py)，观测归一化会随策略一起写入 ONNX。检查脚本使用 ONNX Runtime 在 CPU 上输入零观测和一组固定种子的扰动观测，确认输入 `[1,61]`、输出 `[1,14]`、动作值有限，并打印文件 SHA‑256。
+
+### 在独立 CPU MuJoCo 中复核 OpenMD 起立
+
+在有图形桌面的工作站上，使用同版本工程，将 `OUT` 指向上一步导出的起立 ONNX。下面的命令从俯卧开始回放标准任务 `Mjlab-StandUp-Flat-OpenMD`。旧 ONNX 需显式指定 `--task`。新版导出会把训练任务名写入 ONNX，单独用 `--standing` 加载该策略时也能自动选中配套场景。
+
+```bash
+python scripts/infer_policy.py --task Mjlab-StandUp-Flat-OpenMD \
+  --standing "$OUT" --start-pose prone
+```
+
+启动时核对任务名和 `openmd/scene_stand.xml`。把 `--start-pose` 改为 `supine`（仰卧）或 `sit`（坐姿），观察头部何时离地、双脚何时开始承重，以及起身后能否保持站稳。[独立回放入口](../scripts/infer_policy.py)
+
+旧版通用回放默认选择 MicroDuck 场景。即使手动选择旧 OpenMD 起立 XML，独立 MuJoCo 也读不到训练时另外设置的自碰撞和脚底接触参数。训练和独立回放现在共用 `robot_stand.xml` 中的碰撞设置，保留已有检查点训练时的头颈接触关系。回放按该任务设置关节零位、61 维观测和执行器延迟，并读取 ONNX 记录的动作倍率。与训练端比较时，使用同一检查点、起始姿态和命令，另行记录扰动与随机化条件。[起立机器人 XML](../src/mjlab_microduck/robot/openmd/robot_stand.xml)
 
 上机前核对运行时的 50 Hz 控制频率、关节顺序、HOME 和命令语义，按槽位核对动作倍率。保留原策略和对应设置，再将新模型作为候选单独测试。零输入和扰动输入能验证接口，起立动作仍需在不同初态回放并在有支撑的条件下实测。[实机部署参考](OpenMicroDuck_retrain_guide.md#实机部署参考) · [OpenMicroDuck PPO 训练教程](OpenMicroDuck_PPO训练教程.md)
