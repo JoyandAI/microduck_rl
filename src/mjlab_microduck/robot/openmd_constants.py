@@ -126,11 +126,11 @@ def get_openmd_ground_pick_spec() -> mujoco.MjSpec:
     return spec
 
 
-def _robot(spec_fn, init_state, acts) -> EntityCfg:
+def _robot(spec_fn, init_state, acts, *, collisions=(FULL_COLLISION,)) -> EntityCfg:
     return EntityCfg(
         spec_fn=spec_fn,
         init_state=init_state,
-        collisions=(FULL_COLLISION,),
+        collisions=collisions,
         articulation=EntityArticulationInfoCfg(
             actuators=(acts,),
             soft_joint_pos_limit_factor=0.9,
@@ -139,7 +139,10 @@ def _robot(spec_fn, init_state, acts) -> EntityCfg:
 
 
 OPENMD_WALK_ROBOT_CFG = _robot(get_openmd_walk_spec, OPENMD_HOME_FRAME, actuators)
-OPENMD_STAND_ROBOT_CFG = _robot(get_openmd_stand_spec, OPENMD_HOME_FRAME, actuators)
+# robot_stand.xml owns the contact settings for both training and native replay.
+OPENMD_STAND_ROBOT_CFG = _robot(
+    get_openmd_stand_spec, OPENMD_HOME_FRAME, actuators, collisions=()
+)
 OPENMD_ALLCOLLISIONS_ROBOT_CFG = _robot(
     get_openmd_allcollisions_spec, OPENMD_HOME_FRAME, actuators
 )
@@ -152,5 +155,5 @@ OPENMD_ALLCOLLISIONS_BACKLASH_ROBOT_CFG = _robot(
     backlash_actuators,
 )
 OPENMD_GROUND_PICK_ROBOT_CFG = _robot(
-    get_openmd_ground_pick_spec, OPENMD_HOME_FRAME, actuators
+    get_openmd_ground_pick_spec, OPENMD_HOME_FRAME, actuators, collisions=()
 )

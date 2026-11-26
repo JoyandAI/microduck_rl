@@ -177,6 +177,8 @@ python scripts/eval_straightness.py --task "$TASK" --onnx "$OUT" \
 
 这里要对比的是 **训练侧 mjlab/MuJoCo Warp** 与**独立推进的 CPU MuJoCo 或另一目标仿真器**。同一 PT 在两个 viewer 中动作相似，确认的是回放入口。把同一 ONNX 放入另一个物理后端，才会检验控制循环、执行器和传感器实现是否一致。
 
+标准 OpenMD 起立策略可通过任务名选择配套的独立场景，从俯卧、仰卧或坐姿复核跌倒恢复。行走、带齿隙或 VelStand 权重应按各自的训练任务配置。[OpenMD 起立 ONNX 回放命令](autodl_standup_retrain_guide.md#在独立-cpu-mujoco-中复核-openmd-起立)
+
 1. **锁住两端输入。** 保存同一 ONNX 的 SHA‑256、对应的 XML/碰撞族、m6 参数与控制律、HOME 和实际动作顺序。匹配物理步长、50 Hz 控制、动作倍率、延迟/滤波和指令。先固定初态、种子及标称物理，关闭或固定噪声/随机化，确保比较的是同一条件。
 2. **在同一状态逐项对数。** 两端分别设定已知基座倾角、非零关节位置/速度、上一动作和非零命令，分别输出 61 维 actor 输入、14 维原始动作、缩放后的目标角。61 维包含 48 维本体观测及 13 维指令（速度 3、头部 4、身体 6）。检查姿态/角速度坐标系、重力方向和关节顺序。带回差时还要单独给一个被动轴施加位移和速度，核对编码器读数与舵机位置反馈。
 3. **明确现有工具的边界。** 通用 `scripts/infer_policy.py` 可独立运行 CPU MuJoCo，但其默认场景、HOME 和间隙反馈需逐项对齐。可将主动轴固定在 HOME、速度清零，再将左踝的被动轴单独设为 +0.010 rad 和 +0.10 rad/s。比较训练端和 CPU 端的编码器变化。如果 CPU 端仍读到零，先补齐间隙映射再测闭环。切换场景和 `--new-cmd-obs` 只覆盖部分输入配置。[通用回放器](../scripts/infer_policy.py) · [间隙编码器](../src/mjlab_microduck/actuator/friction_dr_bam.py)

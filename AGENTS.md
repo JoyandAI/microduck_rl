@@ -281,9 +281,10 @@ and use the same task ID with `play "$TASK" --checkpoint-file "$PT" --num-envs 1
   rotation speed.
 - IMU DR is zero-centered — it trains tolerance to misalignment magnitude, and
   CANNOT compensate a systematic mounting bias (that's a runtime calibration).
-- For independent CPU MuJoCo replay, `scripts/infer_policy.py` defaults to
-  MicroDuck geometry. For OpenMD, select the matching scene XML with `--scene`
-  and the 61D observation layout with `--new-cmd-obs`. Verify HOME, joint order,
+- For independent OpenMD StandUp replay, use
+  `scripts/infer_policy.py --task Mjlab-StandUp-Flat-OpenMD --standing out.onnx`.
+  For other OpenMD tasks, select the matching scene XML with `--scene` and the
+  61D observation layout with `--new-cmd-obs`. Verify HOME, joint order,
   action scaling, actuator settings and passive-joint encoder feedback against
   the training task before interpreting the gait. Follow the Sim2Sim checks in
   the [PPO guide](docs/OpenMicroDuck_PPO训练教程.md).

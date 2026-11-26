@@ -140,12 +140,10 @@ def _apply_collision(root: ET.Element, mode: str) -> None:
                 "left_foot_collision" if mesh == "sole_left" else "right_foot_collision",
             )
             geom.set("class", "collision")
-            # Walk keeps foot-foot contact. Stand / allcollisions only need the
-            # floor: the export's collision meshes overlap, and conaffinity 0
-            # stops that pile of self-contacts from overflowing nconmax.
-            if mode != "feet":
-                geom.set("contype", "1")
-                geom.set("conaffinity", "0")
+            if mode == "stand":
+                geom.attrib.update(contype="1", conaffinity="1", condim="3", priority="1")
+            elif mode == "all":
+                geom.attrib.update(contype="1", conaffinity="0")
             continue
         if mode == "feet":
             _disable(geom)
@@ -167,7 +165,9 @@ def _apply_collision(root: ET.Element, mode: str) -> None:
             named[base] = n + 1
             geom.set("name", base if n == 0 else f"{base}_{n}")
         geom.set("contype", "1")
-        geom.set("conaffinity", "0")
+        geom.set("conaffinity", "1" if mode == "stand" else "0")
+        if mode == "stand":
+            geom.set("condim", "1")
 
 
 def _add_sites(root: ET.Element) -> None:
@@ -302,7 +302,8 @@ def _build_robot(src_xml: Path, mode: str, out_path: Path) -> None:
     )
     root.insert(0, comment)
     ET.indent(tree, space="  ")
-    tree.write(out_path, encoding="utf-8", xml_declaration=True)
+    with out_path.open("w", encoding="utf-8", newline="\n") as stream:
+        tree.write(stream, encoding="unicode", xml_declaration=True)
 
 
 def _keyframe_numbers(scene_xml: Path) -> dict[str, list[float]]:

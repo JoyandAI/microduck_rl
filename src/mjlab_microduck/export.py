@@ -264,6 +264,7 @@ def run_export(task_id: str, cfg: ExportConfig) -> ExportResult:
     runner.export_policy_to_onnx(path, filename)
 
     metadata = get_base_metadata(runner.env.unwrapped, run_path=cfg.checkpoint_file)
+    metadata["task_id"] = task_id
     attach_metadata_to_onnx(onnx_path, metadata)
 
     print(f"Written {onnx_path}")

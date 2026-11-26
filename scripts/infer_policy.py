@@ -11,6 +11,7 @@ import queue
 import sys
 import threading
 import time
+from pathlib import Path
 
 IS_WINDOWS = sys.platform == "win32"
 if IS_WINDOWS:
@@ -24,6 +25,7 @@ import numpy as np
 import mujoco
 import mujoco.viewer
 import onnxruntime as ort
+from mjlab_microduck import standup_replay
 
 MICRODUCK_XML = "src/mjlab_microduck/robot/microduck/scene.xml"
 # MICRODUCK_XML = "src/mjlab_microduck/robot/microduck/scene_ramps.xml"
@@ -282,7 +284,7 @@ class TerminalInput:
 
 
 class PolicyInference:
-    def __init__(self, model, data, walking_onnx_path=None, action_scale=1.0, bam_ctrl=None,
+    def __init__(self, model, data, walking_onnx_path=None, action_scale=None, bam_ctrl=None,
                  delay_min_lag=0, delay_max_lag=0,
                  standing_onnx_path=None, switch_threshold=0.05,
                  use_projected_gravity=False, ground_pick_onnx_path=None, ground_pick_period=4.0,
@@ -290,19 +292,21 @@ class PolicyInference:
                  sitstand_onnx_path=None,
                  kick_left_onnx_path=None, kick_right_onnx_path=None,
                  roulade_onnx_path=None,
-                 kick_duration=3.0, roulade_duration=2.0):
+                 kick_duration=3.0, roulade_duration=2.0, standing_session=None, standup_task=False):
         self.bam_ctrl = bam_ctrl  # bam.mujoco.MujocoController (None = legacy position actuators)
         self.model = model
         self.data = data
-        self.action_scale = action_scale
-        self.use_projected_gravity = use_projected_gravity
+        self.standup_task = standup_task
+        self.action_scale = 1.0 if action_scale is None else action_scale
+        self.use_projected_gravity = use_projected_gravity or standup_task
         self.delay_min_lag = delay_min_lag
         self.delay_max_lag = delay_max_lag
         self.switch_threshold = switch_threshold
         # When True: emit the unified 13D command vector and treat head_offset /
         # body_cmd as policy COMMANDS (no add to ctrl, no joint_pos correction).
         # When False: legacy behaviour (3D command, head_offset added to ctrl[5:9]).
-        self.new_cmd_obs = new_cmd_obs
+        self.new_cmd_obs = new_cmd_obs or standup_task
+        self.previous_joint_vel = None
 
         # Load walking policy
         self.walking_session = None
@@ -325,10 +329,11 @@ class PolicyInference:
                 print(f"Could not read gait period from ONNX metadata: {e}")
 
         # Load standing policy
-        self.standing_session = None
-        if standing_onnx_path:
+        self.standing_session = standing_session
+        if standing_onnx_path or self.standing_session is not None:
             print(f"\nLoading standing policy from: {standing_onnx_path}")
-            self.standing_session = ort.InferenceSession(standing_onnx_path)
+            if self.standing_session is None:
+                self.standing_session = ort.InferenceSession(standing_onnx_path)
             s_input_shape = self.standing_session.get_inputs()[0].shape
             s_output_shape = self.standing_session.get_outputs()[0].shape
             print(f"Standing policy input: {self.standing_session.get_inputs()[0].name}, shape: {s_input_shape}")
@@ -467,7 +472,11 @@ class PolicyInference:
         ]
 
         # Default pose for the policy (flexed legs)
-        self.default_pose = DEFAULT_POSE[:self.n_joints]
+        if standup_task:
+            self.default_pose, self.action_scale = standup_replay.policy_settings(
+                model, self.standing_session, action_scale)
+        else:
+            self.default_pose = DEFAULT_POSE[:self.n_joints]
         print(f"Number of actuators: {self.n_joints}")
         print(f"Default pose: {self.default_pose}")
         print(f"Action scale: {self.action_scale}")
@@ -519,6 +528,7 @@ class PolicyInference:
         if self.use_delay:
             buffer_size = self.delay_max_lag + 1
             self.action_buffer = [np.zeros(self.n_joints, dtype=np.float32) for _ in range(buffer_size)]
+            self.fill_first_action = standup_task
             self.buffer_index = 0
             self.current_lag = np.random.randint(self.delay_min_lag, self.delay_max_lag + 1)
             print(f"\nActuator delay enabled:")
@@ -734,8 +744,8 @@ class PolicyInference:
         3. joint_pos (14D) - relative to default
         4. joint_vel (14D)
         5. actions (14D) - last action
-        6. command (3D) - vel cmd (walking) or normalized body pose cmd (standing)
-        Total: 51D
+        6. command (13D unified twist/head/body, or 3D legacy)
+        Total: 61D for unified policies, 51D for legacy policies.
         """
         obs = []
 
@@ -747,7 +757,7 @@ class PolicyInference:
             obs.append(self.get_raw_accelerometer())
 
         obs.append(self.get_joint_pos_relative())
-        obs.append(self.get_joint_vel())
+        obs.append(self.get_joint_vel() if self.previous_joint_vel is None else self.previous_joint_vel)
         obs.append(self.last_action)
         obs.append(self.command)
 
@@ -926,18 +936,26 @@ class PolicyInference:
         else:
             print("Head mode: OFF")
 
-    def infer(self):
+    def infer(self, obs=None):
         """Run policy inference and return action."""
-        obs = self.get_observations()
+        if obs is None:
+            obs = self.get_observations()
         obs_batch = obs.reshape(1, -1)
         action = self.ort_session.run([self.output_name], {self.input_name: obs_batch})[0]
         action = action.squeeze(0).astype(np.float32)
         self.last_action = action.copy()
+        if self.standup_task:
+            # StandUp's actor observes the previous control frame's encoder velocity.
+            self.previous_joint_vel = self.get_joint_vel()
         return action
 
     def apply_action(self, action):
         """Apply action to MuJoCo controls with optional delay."""
         if self.use_delay:
+            if self.fill_first_action:
+                # mjlab backfills a newly reset actuator buffer with its first target.
+                self.action_buffer[:] = [action.copy()] * len(self.action_buffer)
+                self.fill_first_action = False
             self.action_buffer[self.buffer_index] = action.copy()
             delayed_index = (self.buffer_index - self.current_lag) % len(self.action_buffer)
             delayed_action = self.action_buffer[delayed_index]
@@ -1241,6 +1259,8 @@ class OdomAnchorOverlay:
 
 def main():
     parser = argparse.ArgumentParser(description="Run ONNX policy in MuJoCo")
+    parser.add_argument("--task", choices=[standup_replay.TASK_ID], help="Training task for a standalone OpenMD StandUp ONNX; inferred from tagged exports.")
+    parser.add_argument("--start-pose", choices=standup_replay.START_POSES, help="Reproducible starting pose for OpenMD StandUp (default: stand).")
     parser.add_argument("--roller", action="store_true", help="Use roller skate robot XML (robot_walk_rollers.xml)")
     parser.add_argument("--scene", type=str, default=None, help="Path to a scene XML, overriding the default pick (e.g. src/mjlab_microduck/robot/microduck/scene_allcollisions.xml)")
     parser.add_argument("--walking", type=str, default=None, help="Path to walking policy ONNX file")
@@ -1257,7 +1277,7 @@ def main():
     parser.add_argument("--lin-vel-x", type=float, default=0.0, help="Initial linear velocity X command (m/s)")
     parser.add_argument("--lin-vel-y", type=float, default=0.0, help="Initial linear velocity Y command (m/s)")
     parser.add_argument("--ang-vel-z", type=float, default=0.0, help="Initial angular velocity Z command (rad/s)")
-    parser.add_argument("--action-scale", type=float, default=1.0, help="Action scale (default: 1.0)")
+    parser.add_argument("--action-scale", type=float, help="Action scale (OpenMD StandUp uses ONNX metadata when present; otherwise 1.0)")
     parser.add_argument("--raw-accelerometer", action="store_true", help="Use raw accelerometer instead of projected gravity")
     parser.add_argument("--delay", type=int, nargs='*', default=None, help="Enable actuator delay: --delay MIN MAX or --delay LAG")
     parser.add_argument("--debug", action="store_true", help="Print observations and actions")
@@ -1319,6 +1339,34 @@ def main():
 
     if not args.walking and not args.standing and not args.sitstand:
         parser.error("At least one of --walking, --standing or --sitstand must be provided")
+    standing_only = bool(args.standing) and not any((
+        args.walking, args.sitstand, args.sit, args.kick_left, args.kick_right,
+        args.ground_pick, args.slope, args.roulade,
+    ))
+    standing_session = ort.InferenceSession(args.standing) if args.standing else None
+    exported_task = standing_session.get_modelmeta().custom_metadata_map.get("task_id") if standing_session else None
+    try:
+        standup_task = standup_replay.select_task(args.task, exported_task, standing_only)
+    except ValueError as exc:
+        parser.error(str(exc))
+    if standup_task:
+        if args.roller or (args.scene and Path(args.scene).resolve() != standup_replay.SCENE):
+            parser.error(f"{standup_replay.TASK_ID} requires {standup_replay.SCENE.name}")
+        if args.no_bam or args.raw_accelerometer or args.motor != BAM_MOTOR_NAME or args.model not in (None, BAM_MODEL):
+            parser.error(f"{standup_replay.TASK_ID} uses HD-1910 m6 BAM and projected gravity")
+        args.scene = str(standup_replay.SCENE)
+        args.new_cmd_obs = True
+        if args.delay is None:
+            args.delay = [1]  # Four physics substeps, the low end of the trained BAM delay range.
+        print(f"Task: {standup_replay.TASK_ID}; start pose: {args.start_pose or 'stand'}")
+    elif args.start_pose:
+        parser.error("--start-pose requires the OpenMD StandUp task")
+    elif not standing_only and exported_task == standup_replay.TASK_ID:
+        print("Multiple policies selected. Using the generic scene, HOME and observation settings "
+              "specified for this combined replay.")
+    elif standing_only and not exported_task:
+        print(f"Standing ONNX has no task_id; using the generic replay settings. "
+              f"For OpenMD StandUp, pass --task {standup_replay.TASK_ID}.")
     if args.sitstand and not args.new_cmd_obs:
         parser.error("--sitstand policies use the unified 13D command obs (61D); add --new-cmd-obs")
     if (args.kick_left or args.kick_right or args.roulade) and not args.new_cmd_obs:
@@ -1415,6 +1463,8 @@ def main():
         delay_min_lag=delay_min_lag,
         delay_max_lag=delay_max_lag,
         standing_onnx_path=args.standing,
+        standing_session=standing_session,
+        standup_task=standup_task,
         switch_threshold=args.switch_threshold,
         use_projected_gravity=not args.raw_accelerometer,
         ground_pick_onnx_path=args.ground_pick,
@@ -1461,12 +1511,12 @@ def main():
     # Set initial position to default pose
     freejoint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "trunk_base_freejoint")
     qpos_adr = model.jnt_qposadr[freejoint_id]
-    data.qpos[qpos_adr + 0] = 0.0
-    data.qpos[qpos_adr + 1] = 0.0
-    data.qpos[qpos_adr + 2] = 0.1385 if args.roller else 0.125  # rollers add 13.5mm height
-    data.qpos[qpos_adr + 3:qpos_adr + 7] = [1, 0, 0, 0]
-    for i, qpos_idx in enumerate(policy.joint_qpos_indices):
-        data.qpos[qpos_idx] = policy.default_pose[i]
+    if standup_task:
+        standup_replay.set_start_pose(model, data, args.start_pose or "stand")
+    else:
+        data.qpos[qpos_adr:qpos_adr + 3] = [0., 0., 0.1385 if args.roller else 0.125]
+        data.qpos[qpos_adr + 3:qpos_adr + 7] = [1, 0, 0, 0]
+        data.qpos[policy.joint_qpos_indices] = policy.default_pose
     if bam_ctrl is not None:
         bam_ctrl.reset()   # clears voltage-drop state, q_target = current qpos
     policy.set_position_targets(policy.default_pose)
@@ -1777,8 +1827,9 @@ def main():
                 policy.update_ground_pick_phase(actual_dt)
                 policy.update_behavior(actual_dt)
 
+                obs = policy.get_observations()
                 if policy_enabled:
-                    action = policy.infer()
+                    action = policy.infer(obs)
                     policy.apply_action(action)
                 else:
                     # Paused: keep last ctrl, don't query the policy. Motors
@@ -1817,7 +1868,6 @@ def main():
                     )
 
                 if csv_data is not None:
-                    obs = policy.get_observations()
                     row = {'step': control_step_count, 'time': control_step_count * control_dt}
                     for i in range(obs.size):
                         row[f'obs_{i}'] = obs[i]
@@ -1826,14 +1876,12 @@ def main():
                     csv_data.append(row)
 
                 if recorded_observations is not None:
-                    obs = policy.get_observations()
                     timestamp = time.time() - start_time
                     recorded_observations.append({'timestamp': timestamp, 'observation': obs.tolist()})
 
                 if args.debug:
                     should_print = control_step_count <= 10 or control_step_count % 50 == 0
                     if should_print:
-                        obs = policy.get_observations()
                         pos = data.qpos[qpos_adr:qpos_adr + 3]
                         quat = data.qpos[qpos_adr + 3:qpos_adr + 7]
                         com_height = pos[2]
@@ -1873,6 +1921,9 @@ def main():
                         # dofs so MuJoCo's solver applies it on this step.
                         bam_ctrl.update()
                     mujoco.mj_step(model, data)
+                if standup_task:
+                    # Sample IMU and body orientation at the updated control-frame state.
+                    mujoco.mj_forward(model, data)
 
                 if odom_compare is not None:
                     odom_compare.step(data)
